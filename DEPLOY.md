@@ -244,13 +244,26 @@ WhatsApp Client
 
 | Problem | Fix |
 |---------|-----|
-| QR code not appearing | Check logs for errors; ensure volume mounted at `/app/whatsapp-sessions` |
-| Agent uses generic persona | Verify `SOUL.md` exists at `/app/.hermes/SOUL.md` (fixed in Dockerfile) |
-| CRM not saving leads | Check `AIRTABLE_PAT` is set; verify in Railway Variables |
-| Postgres connection errors | Confirm `${{Postgres.PGHOST}}` references match your Postgres service name |
-| WhatsApp disconnects on restart | Add volume at `/app/whatsapp-sessions`; upgrade to Starter plan |
-| `crm_add_lead` tool missing | Redeploy — plugins must be at `/app/.hermes/plugins/` |
-| Health check failing | Wait 90s (start period); check port 3000 is exposed |
+| **Logs stop at "image push"** | Normal — build finished. Open **Deployments → click latest → Deploy/Runtime logs** (not Build) |
+| **Hobby logs cut off / "Load more" ends** | Use **Observability → Log Explorer** or CLI: `railway logs --follow` |
+| **Can't see QR in Railway logs** | Pair locally: `scripts/pair-whatsapp-local.ps1` → set `WHATSAPP_SESSION_B64` in Variables |
+| QR code not appearing | Ensure volume at `/app/.hermes/platforms/whatsapp/session` |
+| Agent uses generic persona | Verify `SOUL.md` at `/app/.hermes/SOUL.md` |
+| CRM not saving leads | Check `AIRTABLE_PAT` in Railway Variables |
+| Postgres connection errors | Confirm `${{Postgres.PGHOST}}` matches your Postgres service name |
+| WhatsApp disconnects on restart | Volume at `/app/.hermes/platforms/whatsapp/session` |
+| Health check failing | Pair WhatsApp first; wait 90s start period |
+
+### Pair without Railway logs (Hobby plan)
+
+```powershell
+cd hermes/docker/railway
+.\scripts\pair-whatsapp-local.ps1
+```
+
+1. Scan QR in local terminal  
+2. Paste `whatsapp-session.b64.txt` into Railway variable `WHATSAPP_SESSION_B64`  
+3. Redeploy — no QR needed on Railway  
 
 ---
 

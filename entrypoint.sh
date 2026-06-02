@@ -1,23 +1,23 @@
 #!/bin/bash
-set -euo pipefail
+# Xenko Railway entrypoint v2.2 — no hermes whatsapp auto-run
+set -uo pipefail
 
 HERMES_DIR="${HERMES_HOME:-/app/.hermes}"
 SESSION_DIR="${HERMES_DIR}/platforms/whatsapp/session"
+ALT_SESSION_DIR="${HERMES_DIR}/whatsapp/session"
 CREDS_FILE="${SESSION_DIR}/creds.json"
 PORT="${PORT:-3000}"
 
-mkdir -p "${SESSION_DIR}" /app/whatsapp-sessions
+echo "==> entrypoint v2.2 (session restore from env, no QR wizard)"
 
-# Patch gateway port for Railway
+mkdir -p "${SESSION_DIR}" "${ALT_SESSION_DIR}" /app/whatsapp-sessions
+
 if [ -f "${HERMES_DIR}/config.yaml" ]; then
   sed -i "s/port: 3000/port: ${PORT}/" "${HERMES_DIR}/config.yaml" 2>/dev/null || true
 fi
 
-# Hermes reads WhatsApp + LLM keys from ~/.hermes/.env (not Railway env alone)
 ENV_FILE="${HERMES_DIR}/.env"
-if [ ! -f "${ENV_FILE}" ]; then
-  touch "${ENV_FILE}"
-fi
+touch "${ENV_FILE}"
 
 _ensure_env() {
   local key="$1"
@@ -39,67 +39,129 @@ _ensure_env "MODEL_PROVIDER" "${MODEL_PROVIDER:-minimax}"
 _ensure_env "MODEL_NAME" "${MODEL_NAME:-MiniMax-M2.1}"
 _ensure_env "AIRTABLE_PAT" "${AIRTABLE_PAT:-}"
 
-# Keep /app/whatsapp-sessions in sync if an old volume was mounted there
+_collect_b64() {
+  local b64=""
+  if [ -n "${WHATSAPP_SESSION_B64:-}" ]; then
+    b64="${WHATSAPP_SESSION_B64}"
+  elif [ -n "${WHATSAPP_SESSION_B64_PARTS:-}" ]; then
+    local i=1
+    local parts="${WHATSAPP_SESSION_B64_PARTS}"
+    while [ "${i}" -le "${parts}" ]; do
+      local var="WHATSAPP_SESSION_B64_${i}"
+      local chunk
+      chunk="$(eval "printf '%s' \"\${${var}:-}\"")"
+      b64="${b64}${chunk}"
+      i=$((i + 1))
+    done
+  fi
+  printf '%s' "${b64}"
+}
+
+_restore_session_from_b64() {
+  local b64
+  b64="$(_collect_b64)"
+  local len=${#b64}
+  if [ "${len}" -lt 50 ]; then
+    echo "==> WHATSAPP_SESSION_B64 not set or too short (len=${len})"
+    return 1
+  fi
+  echo "==> Restoring session from base64 (len=${len})"
+  if ! printf '%s' "${b64}" | base64 -d > /tmp/wa-session.tgz 2>/dev/null; then
+    echo "WARN: base64 decode failed"
+    return 1
+  fi
+  if tar -xzf /tmp/wa-session.tgz -C "${SESSION_DIR}" 2>/dev/null; then
+    rm -f /tmp/wa-session.tgz
+    echo "==> Extracted session to ${SESSION_DIR}"
+    ls -la "${SESSION_DIR}" 2>/dev/null || true
+    _mirror_session_dirs
+    return 0
+  fi
+  if printf '%s' "${b64}" | base64 -d > "${CREDS_FILE}" 2>/dev/null; then
+    echo "==> Wrote creds.json only"
+    _mirror_session_dirs
+    return 0
+  fi
+  rm -f /tmp/wa-session.tgz
+  echo "WARN: could not extract session archive"
+  return 1
+}
+
+_restore_session_from_url() {
+  [ -n "${WHATSAPP_SESSION_URL:-}" ] || return 1
+  echo "==> Downloading session from WHATSAPP_SESSION_URL"
+  if curl -fsSL "${WHATSAPP_SESSION_URL}" -o /tmp/wa-session.tgz && \
+     tar -xzf /tmp/wa-session.tgz -C "${SESSION_DIR}" 2>/dev/null; then
+    rm -f /tmp/wa-session.tgz
+    _mirror_session_dirs
+    return 0
+  fi
+  return 1
+}
+
+_mirror_session_dirs() {
+  mkdir -p "${HERMES_DIR}/whatsapp" "${HERMES_DIR}/platforms/whatsapp"
+  rm -rf "${ALT_SESSION_DIR}" 2>/dev/null || true
+  cp -a "${SESSION_DIR}" "${ALT_SESSION_DIR}" 2>/dev/null || true
+}
+
+# Legacy volume at wrong path
 if [ -d /app/whatsapp-sessions ] && [ "$(ls -A /app/whatsapp-sessions 2>/dev/null)" ] && [ ! -f "${CREDS_FILE}" ]; then
-  echo "==> Migrating session files from /app/whatsapp-sessions"
+  echo "==> Migrating /app/whatsapp-sessions -> ${SESSION_DIR}"
   cp -a /app/whatsapp-sessions/. "${SESSION_DIR}/" 2>/dev/null || true
+  _mirror_session_dirs
 fi
+
+_restore_session_from_b64 || true
+_restore_session_from_url || true
 
 _start_health_stub() {
   python3 - <<'PY' &
-import http.server
-import os
-import socketserver
-
+import http.server, os, socketserver
 port = int(os.environ.get("PORT", "8080"))
-
-class Handler(http.server.BaseHTTPRequestHandler):
+class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/health"):
             self.send_response(200)
-            self.send_header("Content-Type", "text/plain")
             self.end_headers()
             self.wfile.write(b"ok\n")
         else:
             self.send_response(404)
             self.end_headers()
-
-    def log_message(self, *_args):
-        pass
-
-with socketserver.TCPServer(("0.0.0.0", port), Handler) as httpd:
-    httpd.serve_forever()
+    def log_message(self, *a): pass
+socketserver.TCPServer(("0.0.0.0", port), H).serve_forever()
 PY
-  HEALTH_STUB_PID=$!
+  echo $! > /tmp/health_stub.pid
 }
 
 _stop_health_stub() {
-  if [ -n "${HEALTH_STUB_PID:-}" ]; then
-    kill "${HEALTH_STUB_PID}" 2>/dev/null || true
-  fi
+  [ -f /tmp/health_stub.pid ] && kill "$(cat /tmp/health_stub.pid)" 2>/dev/null || true
+  rm -f /tmp/health_stub.pid
 }
 
 echo "==> Xenko WhatsApp Agent (HERMES_HOME=${HERMES_DIR}, PORT=${PORT})"
 
 if [ ! -f "${CREDS_FILE}" ]; then
-  echo "==> WhatsApp not paired yet — starting QR pairing wizard"
-  echo "==> Scan the QR code below: WhatsApp -> Settings -> Linked Devices -> Link a Device"
+  echo ""
+  echo "============================================================"
+  echo "  WhatsApp session missing at:"
+  echo "  ${CREDS_FILE}"
+  echo ""
+  echo "  1) Run: scripts/encode-local-session.ps1  (~3KB file)"
+  echo "  2) Railway Variables -> WHATSAPP_SESSION_B64"
+  echo "  3) Volume mount: ${SESSION_DIR}"
+  echo "  4) Redeploy (must see 'entrypoint v2.2' in logs)"
+  echo ""
+  echo "  Container waiting (no crash loop)..."
+  echo "============================================================"
   _start_health_stub
-  trap _stop_health_stub EXIT
-  hermes whatsapp || {
-    echo "==> Pairing wizard exited (code $?). Check logs for QR or errors."
-    echo "==> Tip: Railway Shell -> run: hermes whatsapp"
-  }
+  while [ ! -f "${CREDS_FILE}" ]; do
+    sleep 30
+    _restore_session_from_b64 || true
+    _restore_session_from_url || true
+  done
   _stop_health_stub
-  trap - EXIT
 fi
 
-if [ ! -f "${CREDS_FILE}" ]; then
-  echo "ERROR: Still no creds.json at ${CREDS_FILE}"
-  echo "Mount a Railway volume at: ${SESSION_DIR}"
-  echo "Or pair locally and upload session files to that path."
-  exit 1
-fi
-
-echo "==> WhatsApp session found — starting gateway"
+echo "==> creds.json OK — starting gateway"
 exec hermes gateway run
