@@ -103,7 +103,10 @@ GBRAIN_PG_DB=${{Postgres.PGDATABASE}}
 GBRAIN_PG_USER=${{Postgres.PGUSER}}
 
 # WhatsApp
-WHATSAPP_SESSION_DIR=/app/whatsapp-sessions
+WHATSAPP_ENABLED=true
+WHATSAPP_MODE=bot
+WHATSAPP_ALLOW_ALL_USERS=true
+GATEWAY_ALLOW_ALL_USERS=true
 HERMES_PRIVILEGED_PHONE=+94760193094
 ```
 
@@ -121,19 +124,13 @@ WhatsApp sessions are lost on every restart without volumes.
 2. Go to **Settings → Volumes**
 3. Click **+ Add Volume**
 
-**Volume 1 — WhatsApp sessions:**
+**Volume 1 — WhatsApp session (required):**
 | Setting | Value |
 |---------|-------|
-| Mount path | `/app/whatsapp-sessions` |
+| Mount path | `/app/.hermes/platforms/whatsapp/session` |
 | Size | 1 GB |
 
-**Volume 2 — Hermes state (recommended):**
-| Setting | Value |
-|---------|-------|
-| Mount path | `/app/.hermes` |
-| Size | 1 GB |
-
-> Volumes require Railway **Starter plan** ($5/month) or higher.
+> Hermes stores `creds.json` here — NOT at `/app/whatsapp-sessions`.
 
 ---
 

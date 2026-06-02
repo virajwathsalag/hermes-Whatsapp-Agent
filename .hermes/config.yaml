@@ -8,8 +8,7 @@ gateway:
 
 whatsapp:
   enabled: true
-  session_dir: /app/whatsapp-sessions
-  qr_timeout: 120
+  unauthorized_dm_behavior: ignore
 
 skills:
   - name: xenko-sales

@@ -8,7 +8,7 @@ ENV HERMES_HOME=/app/.hermes
 ENV HERMES_NO_COLOR=1
 ENV PATH="/root/.local/bin:${PATH}"
 
-# System dependencies (libpq for PostgreSQL / GBrain)
+# System dependencies + Node.js (required for WhatsApp Baileys bridge)
 RUN apt-get update && apt-get install -y \
     curl \
     bash \
@@ -20,7 +20,12 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     libcrypt1 \
     libssl3 \
-    && rm -rf /var/lib/apt/lists/*
+    ca-certificates \
+    gnupg \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && node --version && npm --version
 
 # Install Hermes Agent
 RUN curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
@@ -40,12 +45,12 @@ COPY gbrain_history.py /app/gbrain_history.py
 COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
-# WhatsApp session dir (mount Railway volume here)
-RUN mkdir -p /app/whatsapp-sessions /app/.hermes
+# WhatsApp session path used by Hermes (volume mount target)
+RUN mkdir -p /app/.hermes/platforms/whatsapp/session /app/whatsapp-sessions
 
-EXPOSE 3000
+EXPOSE 8080
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=3 \
-    CMD curl -f http://localhost:${PORT:-3000}/health || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=5 \
+    CMD curl -f "http://localhost:${PORT:-8080}/health" || exit 1
 
 ENTRYPOINT ["/app/entrypoint.sh"]
