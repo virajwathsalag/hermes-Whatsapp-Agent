@@ -2,6 +2,7 @@
 # Xenko WhatsApp Agent — Hermes Config (Railway)
 # =============================================================================
 
+# Gateway internal port (WhatsApp bridge uses 3000; do not set to Railway PORT)
 gateway:
   host: "0.0.0.0"
   port: 3000
@@ -9,6 +10,7 @@ gateway:
 whatsapp:
   enabled: true
   unauthorized_dm_behavior: ignore
+  bridge_port: 3000
 
 skills:
   - name: xenko-sales
