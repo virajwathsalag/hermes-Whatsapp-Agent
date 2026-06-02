@@ -1,0 +1,31 @@
+# =============================================================================
+# XENKO WhatsApp Agent - HERMES CONFIG
+# =============================================================================
+
+# Gateway configuration
+gateway:
+  host: "0.0.0.0"
+  port: 3000
+
+# WhatsApp Platform
+whatsapp:
+  enabled: true
+  session_dir: ./whatsapp-sessions
+  qr_timeout: 120
+
+# Load sales skills (auto-load for WhatsApp)
+skills:
+  - name: xenko-sales
+    enabled: true
+  - name: client-qualifier
+    enabled: true
+
+# Airtable CRM Integration
+airtable:
+  enabled: true
+  base_id: appPcG5glvZZ8dxVQ
+
+# Model config
+model:
+  provider: openai
+  name: gpt-4o-mini

@@ -1,0 +1,5 @@
+name: xenko-crm
+version: "1.0.0"
+description: Write-only Airtable lead capture for WhatsApp sales (no terminal, no reads)
+requires_env:
+  - AIRTABLE_PAT
