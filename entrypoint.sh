@@ -8,7 +8,7 @@ ALT_SESSION_DIR="${HERMES_DIR}/whatsapp/session"
 CREDS_FILE="${SESSION_DIR}/creds.json"
 RAILWAY_PORT="${PORT:-8080}"
 
-echo "==> entrypoint v2.4 (health on PORT=${RAILWAY_PORT}, gateway internal)"
+echo "==> entrypoint v2.5 (health on PORT=${RAILWAY_PORT}, gateway foreground)"
 
 mkdir -p "${SESSION_DIR}" "${ALT_SESSION_DIR}" /app/whatsapp-sessions
 
@@ -40,6 +40,7 @@ _ensure_env "AIRTABLE_PAT" "${AIRTABLE_PAT:-}"
 _ensure_env "HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT" "${HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT:-180}"
 _ensure_env "WHATSAPP_NPM_INSTALL_TIMEOUT" "${WHATSAPP_NPM_INSTALL_TIMEOUT:-600}"
 _ensure_env "HERMES_WHATSAPP_HTTP_TIMEOUT" "${HERMES_WHATSAPP_HTTP_TIMEOUT:-120}"
+_ensure_env "WHATSAPP_DEBUG" "${WHATSAPP_DEBUG:-true}"
 
 _collect_b64() {
   local b64=""
@@ -141,10 +142,12 @@ if [ ! -f "${CREDS_FILE}" ]; then
   done
 fi
 
-echo "==> creds.json OK — starting Hermes gateway (background)"
+echo "==> creds.json OK — starting Hermes gateway"
+echo "==> First boot may take 1-3 min (npm + WhatsApp bridge). Send a WhatsApp test after you see 'Bridge ready'."
+echo "==> Required vars: MINIMAX_API_KEY, AIRTABLE_PAT"
+if [ -z "${MINIMAX_API_KEY:-}" ] && [ -z "${OPENROUTER_API_KEY:-}" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
+  echo "WARN: No LLM API key in Railway Variables — bot cannot reply to messages"
+fi
 
-trap '_stop_health_server; kill -TERM "${HERMES_PID:-}" 2>/dev/null; wait "${HERMES_PID:-}" 2>/dev/null' TERM INT EXIT
-
-hermes gateway run &
-HERMES_PID=$!
-wait "${HERMES_PID}"
+export PYTHONUNBUFFERED=1
+exec hermes gateway run
