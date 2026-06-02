@@ -8,7 +8,7 @@ ALT_SESSION_DIR="${HERMES_DIR}/whatsapp/session"
 CREDS_FILE="${SESSION_DIR}/creds.json"
 RAILWAY_PORT="${PORT:-8080}"
 
-echo "==> entrypoint v2.5 (health on PORT=${RAILWAY_PORT}, gateway foreground)"
+echo "==> entrypoint v2.6 (health=8080, bridge=3000, gateway=8642)"
 
 mkdir -p "${SESSION_DIR}" "${ALT_SESSION_DIR}" /app/whatsapp-sessions
 
@@ -41,6 +41,8 @@ _ensure_env "HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT" "${HERMES_GATEWAY_PLATFORM
 _ensure_env "WHATSAPP_NPM_INSTALL_TIMEOUT" "${WHATSAPP_NPM_INSTALL_TIMEOUT:-600}"
 _ensure_env "HERMES_WHATSAPP_HTTP_TIMEOUT" "${HERMES_WHATSAPP_HTTP_TIMEOUT:-120}"
 _ensure_env "WHATSAPP_DEBUG" "${WHATSAPP_DEBUG:-true}"
+_ensure_env "WHATSAPP_BRIDGE_PORT" "${WHATSAPP_BRIDGE_PORT:-3000}"
+_ensure_env "API_SERVER_ENABLED" "${API_SERVER_ENABLED:-false}"
 
 _collect_b64() {
   local b64=""
