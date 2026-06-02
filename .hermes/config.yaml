@@ -43,4 +43,4 @@ agent:
   gateway_timeout: 1800
 
 logging:
-  level: INFO
+  level: DEBUG

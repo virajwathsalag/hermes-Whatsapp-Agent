@@ -53,7 +53,8 @@ try {
             $_.Name -like "session-*" -or
             $_.Name -like "identity-key-*" -or
             $_.Name -like "device-list-*" -or
-            $_.Name -like "tctoken-*"
+            $_.Name -like "tctoken-*" -or
+            $_.Name -like "lid-mapping-*"
         }
         if ($essential.Count -eq 0) {
             Write-Error "No essential session files found in $SessionDir"
