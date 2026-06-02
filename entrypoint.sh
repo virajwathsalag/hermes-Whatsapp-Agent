@@ -8,7 +8,7 @@ ALT_SESSION_DIR="${HERMES_DIR}/whatsapp/session"
 CREDS_FILE="${SESSION_DIR}/creds.json"
 PORT="${PORT:-3000}"
 
-echo "==> entrypoint v2.2 (session restore from env, no QR wizard)"
+echo "==> entrypoint v2.3 (session restore + long WhatsApp timeouts)"
 
 mkdir -p "${SESSION_DIR}" "${ALT_SESSION_DIR}" /app/whatsapp-sessions
 
@@ -38,6 +38,9 @@ _ensure_env "OPENROUTER_API_KEY" "${OPENROUTER_API_KEY:-}"
 _ensure_env "MODEL_PROVIDER" "${MODEL_PROVIDER:-minimax}"
 _ensure_env "MODEL_NAME" "${MODEL_NAME:-MiniMax-M2.1}"
 _ensure_env "AIRTABLE_PAT" "${AIRTABLE_PAT:-}"
+_ensure_env "HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT" "${HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT:-180}"
+_ensure_env "WHATSAPP_NPM_INSTALL_TIMEOUT" "${WHATSAPP_NPM_INSTALL_TIMEOUT:-600}"
+_ensure_env "HERMES_WHATSAPP_HTTP_TIMEOUT" "${HERMES_WHATSAPP_HTTP_TIMEOUT:-120}"
 
 _collect_b64() {
   local b64=""
