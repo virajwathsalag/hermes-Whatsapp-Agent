@@ -223,9 +223,6 @@ def _jsonl_history_paths() -> list[Path]:
         candidate = parent / ".gbrain_history.jsonl"
         if candidate.exists():
             paths.append(candidate)
-    repo = Path(r"E:\Freelancer\Akeel\Local-Setup\hermes\.gbrain_history.jsonl")
-    if repo.exists():
-        paths.append(repo)
     seen: set[str] = set()
     unique: list[Path] = []
     for p in paths:

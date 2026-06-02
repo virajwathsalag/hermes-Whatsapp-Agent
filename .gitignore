@@ -1,0 +1,30 @@
+# Secrets — never commit
+.env
+.env.local
+*.pem
+*.key
+
+# WhatsApp session data (local dev only; use Railway volume in production)
+whatsapp-sessions/
+
+# Python / build
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Local Hermes state (use Railway volume in production)
+.hermes/state.db
+.hermes/whatsapp/
