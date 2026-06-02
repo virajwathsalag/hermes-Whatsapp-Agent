@@ -8,7 +8,7 @@ ALT_SESSION_DIR="${HERMES_DIR}/whatsapp/session"
 CREDS_FILE="${SESSION_DIR}/creds.json"
 RAILWAY_PORT="${PORT:-8080}"
 
-echo "==> entrypoint v2.6 (health=8080, bridge=3000, gateway=8642)"
+echo "==> entrypoint v2.7 (full config + env sync)"
 
 mkdir -p "${SESSION_DIR}" "${ALT_SESSION_DIR}" /app/whatsapp-sessions
 
@@ -16,33 +16,46 @@ mkdir -p "${SESSION_DIR}" "${ALT_SESSION_DIR}" /app/whatsapp-sessions
 # Do NOT rewrite gateway port to PORT (that breaks WhatsApp bridge on 3000)
 
 ENV_FILE="${HERMES_DIR}/.env"
-touch "${ENV_FILE}"
 
-_ensure_env() {
+_upsert_env() {
   local key="$1"
   local val="$2"
-  if [ -n "${val}" ] && ! grep -q "^${key}=" "${ENV_FILE}" 2>/dev/null; then
-    echo "${key}=${val}" >> "${ENV_FILE}"
+  [ -n "${val}" ] || return 0
+  local tmp
+  tmp="$(mktemp)"
+  if [ -f "${ENV_FILE}" ]; then
+    grep -v "^${key}=" "${ENV_FILE}" > "${tmp}" 2>/dev/null || true
+  else
+    : > "${tmp}"
   fi
+  echo "${key}=${val}" >> "${tmp}"
+  mv "${tmp}" "${ENV_FILE}"
 }
 
-_ensure_env "WHATSAPP_ENABLED" "${WHATSAPP_ENABLED:-true}"
-_ensure_env "WHATSAPP_MODE" "${WHATSAPP_MODE:-bot}"
-_ensure_env "WHATSAPP_ALLOW_ALL_USERS" "${WHATSAPP_ALLOW_ALL_USERS:-true}"
-_ensure_env "GATEWAY_ALLOW_ALL_USERS" "${GATEWAY_ALLOW_ALL_USERS:-true}"
-_ensure_env "MINIMAX_API_KEY" "${MINIMAX_API_KEY:-}"
-_ensure_env "OPENAI_API_KEY" "${OPENAI_API_KEY:-}"
-_ensure_env "ANTHROPIC_API_KEY" "${ANTHROPIC_API_KEY:-}"
-_ensure_env "OPENROUTER_API_KEY" "${OPENROUTER_API_KEY:-}"
-_ensure_env "MODEL_PROVIDER" "${MODEL_PROVIDER:-minimax}"
-_ensure_env "MODEL_NAME" "${MODEL_NAME:-MiniMax-M2.1}"
-_ensure_env "AIRTABLE_PAT" "${AIRTABLE_PAT:-}"
-_ensure_env "HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT" "${HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT:-180}"
-_ensure_env "WHATSAPP_NPM_INSTALL_TIMEOUT" "${WHATSAPP_NPM_INSTALL_TIMEOUT:-600}"
-_ensure_env "HERMES_WHATSAPP_HTTP_TIMEOUT" "${HERMES_WHATSAPP_HTTP_TIMEOUT:-120}"
-_ensure_env "WHATSAPP_DEBUG" "${WHATSAPP_DEBUG:-true}"
-_ensure_env "WHATSAPP_BRIDGE_PORT" "${WHATSAPP_BRIDGE_PORT:-3000}"
-_ensure_env "API_SERVER_ENABLED" "${API_SERVER_ENABLED:-false}"
+# Always sync Railway Variables -> .hermes/.env (Hermes reads .env, not Railway env)
+_upsert_env "WHATSAPP_ENABLED" "${WHATSAPP_ENABLED:-true}"
+_upsert_env "WHATSAPP_MODE" "${WHATSAPP_MODE:-bot}"
+_upsert_env "WHATSAPP_ALLOW_ALL_USERS" "${WHATSAPP_ALLOW_ALL_USERS:-true}"
+_upsert_env "WHATSAPP_ALLOWED_USERS" "${WHATSAPP_ALLOWED_USERS:-*}"
+_upsert_env "GATEWAY_ALLOW_ALL_USERS" "${GATEWAY_ALLOW_ALL_USERS:-true}"
+_upsert_env "MINIMAX_API_KEY" "${MINIMAX_API_KEY:-}"
+_upsert_env "OPENAI_API_KEY" "${OPENAI_API_KEY:-}"
+_upsert_env "ANTHROPIC_API_KEY" "${ANTHROPIC_API_KEY:-}"
+_upsert_env "OPENROUTER_API_KEY" "${OPENROUTER_API_KEY:-}"
+_upsert_env "MODEL_PROVIDER" "${MODEL_PROVIDER:-minimax}"
+_upsert_env "MODEL_NAME" "${MODEL_NAME:-MiniMax-M2.1}"
+_upsert_env "AIRTABLE_PAT" "${AIRTABLE_PAT:-}"
+_upsert_env "POSTGRES_PASSWORD" "${POSTGRES_PASSWORD:-}"
+_upsert_env "GBRAIN_PG_HOST" "${GBRAIN_PG_HOST:-}"
+_upsert_env "GBRAIN_PG_PORT" "${GBRAIN_PG_PORT:-}"
+_upsert_env "GBRAIN_PG_DB" "${GBRAIN_PG_DB:-}"
+_upsert_env "GBRAIN_PG_USER" "${GBRAIN_PG_USER:-}"
+_upsert_env "HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT" "${HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT:-180}"
+_upsert_env "WHATSAPP_NPM_INSTALL_TIMEOUT" "${WHATSAPP_NPM_INSTALL_TIMEOUT:-600}"
+_upsert_env "HERMES_WHATSAPP_HTTP_TIMEOUT" "${HERMES_WHATSAPP_HTTP_TIMEOUT:-120}"
+_upsert_env "WHATSAPP_DEBUG" "${WHATSAPP_DEBUG:-true}"
+_upsert_env "WHATSAPP_BRIDGE_PORT" "${WHATSAPP_BRIDGE_PORT:-3000}"
+_upsert_env "API_SERVER_ENABLED" "${API_SERVER_ENABLED:-false}"
 
 _collect_b64() {
   local b64=""
@@ -145,11 +158,18 @@ if [ ! -f "${CREDS_FILE}" ]; then
 fi
 
 echo "==> creds.json OK — starting Hermes gateway"
-echo "==> First boot may take 1-3 min (npm + WhatsApp bridge). Send a WhatsApp test after you see 'Bridge ready'."
-echo "==> Required vars: MINIMAX_API_KEY, AIRTABLE_PAT"
-if [ -z "${MINIMAX_API_KEY:-}" ] && [ -z "${OPENROUTER_API_KEY:-}" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
-  echo "WARN: No LLM API key in Railway Variables — bot cannot reply to messages"
+echo "==> Plugins: $(ls -1 ${HERMES_DIR}/plugins 2>/dev/null | tr '\n' ' ')"
+echo "==> .env keys: $(grep -c '=' "${ENV_FILE}" 2>/dev/null || echo 0) entries"
+if grep -q '^MINIMAX_API_KEY=.\+' "${ENV_FILE}" 2>/dev/null; then
+  echo "==> MINIMAX_API_KEY: present in .hermes/.env"
+else
+  echo "ERROR: MINIMAX_API_KEY missing — add it in Railway Variables and redeploy"
 fi
+if ! grep -q '^AIRTABLE_PAT=.\+' "${ENV_FILE}" 2>/dev/null; then
+  echo "WARN: AIRTABLE_PAT missing — CRM saves will fail"
+fi
+echo "==> Message the PAIRED bot number (device in Linked Devices), not your personal number"
+echo "==> Wait for 'Bridge ready' then send: I need marketing help"
 
 export PYTHONUNBUFFERED=1
 exec hermes gateway run

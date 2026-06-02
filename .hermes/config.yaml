@@ -1,26 +1,46 @@
 # =============================================================================
-# Xenko WhatsApp Agent — Hermes Config (Railway)
+# Xenko WhatsApp Agent — Hermes Config (Railway production)
+# Synced from working local config — keep model.default (not model.name)
 # =============================================================================
-# Ports: health=8080 (Railway), bridge=3000, gateway API=8642 (internal)
+
+model:
+  default: MiniMax-M2.1
+  provider: minimax
+  base_url: https://api.minimax.io/anthropic
 
 gateway:
-  host: "127.0.0.1"
+  host: 127.0.0.1
   port: 8642
 
-whatsapp:
-  enabled: true
-  unauthorized_dm_behavior: ignore
+whatsapp: {}
 
-skills:
-  - name: xenko-sales
-    enabled: true
-  - name: client-qualifier
-    enabled: true
+plugins:
+  enabled:
+    - xenko-crm
+    - xenko-whatsapp-guard
+
+platform_skills:
+  whatsapp:
+    - xenko-sales
+    - client-qualifier
+
+platform_toolsets:
+  whatsapp:
+    - messaging
+    - clarify
+    - xenko_crm
+
+known_plugin_toolsets:
+  whatsapp:
+    - xenko_crm
 
 airtable:
   enabled: true
   base_id: appPcG5glvZZ8dxVQ
 
-model:
-  provider: minimax
-  name: MiniMax-M2.1
+agent:
+  max_turns: 60
+  gateway_timeout: 1800
+
+logging:
+  level: INFO
