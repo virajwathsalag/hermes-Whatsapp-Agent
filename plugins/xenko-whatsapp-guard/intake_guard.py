@@ -2367,14 +2367,20 @@ def pre_tool_block_during_intake(tool_name: str = "", session_id: str = "", **kw
             return {"action": "block", "message": "Complete intake before CRM."}
         return None
 
-    if name in _NON_CRM_TOOLS_BLOCKED:
-        return {
-            "action": "block",
-            "message": (
-                "WhatsApp sales line: reply in plain text only. "
-                "No terminal, sessions, files, or skills."
-            ),
-        }
+    # Allow send_message after intake is complete
+        if name == "send_message" and step.get("mode") == "complete":
+            return None
+        if name == "send_message" and step.get("in_intake") and int(step.get("n") or 0) >= CLOSE_STEP:
+            return None
+
+        if name in _NON_CRM_TOOLS_BLOCKED:
+            return {
+                "action": "block",
+                "message": (
+                    "WhatsApp sales line: reply in plain text only. "
+                    "No terminal, sessions, files, or skills."
+                ),
+            }
 
     if step.get("in_intake") and name not in ("crm_add_lead",):
         return {
