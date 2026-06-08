@@ -1629,19 +1629,15 @@ def _returning_new_contact_step(
                 answers,
                 email=prior["email"],
             )
-        if _user_declines_prior_email(user_message):
-            return {
-                "n": 7,
-                "message": STEPS[7],
-                "in_intake": True,
-                "mode": "email_ask",
-            }
-        return {
-            "mode": "email_confirm",
-            "n": 4,
-            "message": _email_confirm_message(prior["email"]),
-            "in_intake": True,
-        }
+        # User declined prior email - just close without asking for new email
+        return _complete_with_contact(
+            session_id,
+            phone,
+            messages,
+            window,
+            answers,
+            email="",  # No email required
+        )
 
     return {
         "mode": "email_confirm",
@@ -1653,9 +1649,10 @@ def _returning_new_contact_step(
 
 
 def _can_complete_intake(window: list[tuple[str, str]], answers: list[str]) -> bool:
+    # Must have all required answers first
     if len(answers) < INTAKE_ANSWERS_REQUIRED:
         return False
-    # No email required anymore
+    # Then verify the questions were asked
     intake_markers = (
         "your name",
         "company called",
@@ -1664,7 +1661,6 @@ def _can_complete_intake(window: list[tuple[str, str]], answers: list[str]) -> b
         "hoping to achieve",
         "budget",
         "get started",
-        "best email",
     )
     assistant_text = " ".join(c.lower() for r, c in window if r == "assistant")
     if not any(m in assistant_text for m in intake_markers):
@@ -2188,7 +2184,8 @@ def guard_response(text: str, step: dict[str, Any]) -> str:
     elif mode == "email_confirm":
         out = step.get("message") or _email_confirm_message("")
     elif mode == "email_ask":
-        out = step.get("message") or STEPS[7]
+        # No longer used - email step removed
+        out = step.get("message") or CLOSE_LINE
     elif mode == "complete" or int(step.get("n") or 0) >= CLOSE_STEP:
         out = step.get("message") or CLOSE_LINE
     elif not step.get("in_intake"):
