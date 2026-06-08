@@ -812,7 +812,8 @@ def _extract_phone(session_id: str | None = None, **kwargs: Any) -> str | None:
 def _crm_lead_exists(phone: str, session_id: str | None = None) -> bool:
     # First check: is this session already in intake flow?
     # If so, don't treat as returning - they're mid-intake
-    if session_id and _session_step.get(session_id, 0) > 0:
+    step = _session_step.get(session_id)
+    if step and isinstance(step, dict) and step.get("n", 0) > 0:
         return False
     # First check: was this phone just synced to CRM in this session?
     # If so, don't treat as returning - they're still in the same intake flow
@@ -836,7 +837,8 @@ def _crm_lead_exists(phone: str, session_id: str | None = None) -> bool:
 
 def _had_prior_intake(phone: str | None, messages: list[tuple[str, str]], session_id: str | None = None) -> bool:
     # Don't treat as prior intake if this session is already in intake flow
-    if session_id and _session_step.get(session_id, 0) > 0:
+    step = _session_step.get(session_id)
+    if step and isinstance(step, dict) and step.get("n", 0) > 0:
         return False
     # Don't treat as prior intake if this phone was just synced to CRM in this session
     if phone and phone in _session_freshly_synced:
