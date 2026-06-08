@@ -53,7 +53,7 @@ CLOSE_LINE = (
     "we're looking forward to learning more about your business and exploring how we can help."
 )
 CLOSE_LINE_LEGACY = "our founder will be in touch"
-CLOSE_STEP = 6  # After step 5 (phone question is step 6)
+CLOSE_STEP = 5  # After step 5 (no email)
 RETURNING_QUESTION = (
     "great to hear from you again. are you reaching out about your existing project, "
     "or is this something new you'd like help with?"
@@ -65,8 +65,8 @@ RETURNING_STEPS_KNOWN = {
     3: "when would you ideally like to get started?",
 }
 # No email step - CRM saves without email
-# 7-step intake - name, company, industry, goal, budget, timeline, email
-INTAKE_ANSWERS_REQUIRED = 7  # name, company, industry, goal, budget, timeline, email
+# 6-step intake - name, company, industry, goal, budget, timeline (no email)
+INTAKE_ANSWERS_REQUIRED = 5  # name, company, industry, goal, budget, timeline
 
 STEPS = {
     1: "what's your name?",
@@ -75,7 +75,6 @@ STEPS = {
     4: "what are you hoping to achieve?",
     5: "do you have a budget in mind?",
     6: "when would you ideally like to get started?",
-    7: "what's the best email to reach you at?",
 }
 
 # Single message greeting - human style, not form-like
@@ -2514,7 +2513,16 @@ def pre_tool_block_during_intake(tool_name: str = "", session_id: str = "", **kw
             return {"action": "block", "message": "Complete intake before CRM."}
         return None
 
+    # Allow send_message when intake is complete (n >= CLOSE_STEP)
     if name in _NON_CRM_TOOLS_BLOCKED:
+        # If intake complete, allow send_message
+        if name == "send_message" and (
+            step.get("mode") == "complete" 
+            or int(step.get("n") or 0) >= CLOSE_STEP
+            or not step.get("in_intake")
+        ):
+            return None
+        # Otherwise block
         return {
             "action": "block",
             "message": (
