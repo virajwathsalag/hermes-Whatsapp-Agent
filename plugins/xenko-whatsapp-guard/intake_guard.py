@@ -12,14 +12,23 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-try:
-    from founder_notify import notify_below_budget_web, notify_qualified_lead
-except ImportError:
-    def notify_below_budget_web(**_kwargs: Any) -> None:
-        return None
 
-    def notify_qualified_lead(**_kwargs: Any) -> None:
-        return None
+def _notify_qualified_lead(**kwargs: Any) -> None:
+    """Lazy import to avoid module loading issues."""
+    try:
+        from .founder_notify import notify_qualified_lead as _notify
+        _notify(**kwargs)
+    except ImportError:
+        logger.warning("founder_notify not available - skipping WhatsApp notification")
+
+
+def _notify_below_budget_web(**kwargs: Any) -> None:
+    """Lazy import to avoid module loading issues."""
+    try:
+        from .founder_notify import notify_below_budget_web as _notify
+        _notify(**kwargs)
+    except ImportError:
+        logger.warning("founder_notify not available - skipping WhatsApp notification")
 
 _session_step: dict[str, dict[str, Any]] = {}
 _session_returning: dict[str, str] = {}  # session_id -> "asked" | "same" | "new"
@@ -674,14 +683,14 @@ def _flag_below_budget_web(
         budget_answer[:80],
     )
     clean = [a.strip() for a in (answers or []) if (a or "").strip()]
-    notify_below_budget_web(
+    _notify_below_budget_web(
             session_id=session_id,
             name=clean[0] if len(clean) > 0 else "",
             company=clean[1] if len(clean) > 1 else "",
             budget_text=budget_answer[:80],
             amount_lkr=amount_lkr,
             phone=phone,
-            destination="home",
+            destination="founder",
         )
 
 
@@ -1533,7 +1542,7 @@ def _complete_with_contact(
     crm_result = _sync_crm_on_qualification(session_id, phone, contact, answers)
     close_msg = _close_line_for_session(session_id, contact)
     clean = [a.strip() for a in answers if (a or "").strip()]
-    notify_qualified_lead(
+    _notify_qualified_lead(
         session_id=session_id,
         name=final_name,
         company=company,
@@ -1545,7 +1554,7 @@ def _complete_with_contact(
         phone=phone,
         lead_type=_session_lead_type.get(session_id or "", ""),
         below_budget=(session_id or "") in _session_below_budget,
-        destination="home",
+        destination="founder",
     )
     if session_id:
         _session_contact[session_id] = contact
@@ -2405,7 +2414,7 @@ def transform_whatsapp_output(
                     _session_step[session_id] = {**step, "crm_sync": sync}
             if _can_complete_intake(window, answers):
                 clean = [a.strip() for a in answers if (a or "").strip()]
-                notify_qualified_lead(
+                _notify_qualified_lead(
                     session_id=session_id,
                     name=crm_contact.get("name") or (clean[0] if clean else ""),
                     company=crm_contact.get("company") or (clean[1] if len(clean) > 1 else ""),
@@ -2417,6 +2426,7 @@ def transform_whatsapp_output(
                     phone=phone,
                     lead_type=_session_lead_type.get(session_id or "", ""),
                     below_budget=(session_id or "") in _session_below_budget,
+                    destination="founder",
                 )
         out = guard_response(response_text or "", step)
         out = sanitize_whatsapp_text(out) or CLOSE_LINE
