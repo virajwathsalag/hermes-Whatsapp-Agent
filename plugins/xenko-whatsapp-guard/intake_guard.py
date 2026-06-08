@@ -675,13 +675,14 @@ def _flag_below_budget_web(
     )
     clean = [a.strip() for a in (answers or []) if (a or "").strip()]
     notify_below_budget_web(
-        session_id=session_id,
-        name=clean[0] if len(clean) > 0 else "",
-        company=clean[1] if len(clean) > 1 else "",
-        budget_text=budget_answer,
-        amount_lkr=amount,
-        phone=phone,
-    )
+            session_id=session_id,
+            name=clean[0] if len(clean) > 0 else "",
+            company=clean[1] if len(clean) > 1 else "",
+            budget_text=budget_answer[:80],
+            amount_lkr=amount_lkr,
+            phone=phone,
+            destination="home",
+        )
 
 
 def _hermes_home() -> Path:
@@ -1544,6 +1545,7 @@ def _complete_with_contact(
         phone=phone,
         lead_type=_session_lead_type.get(session_id or "", ""),
         below_budget=(session_id or "") in _session_below_budget,
+        destination="home",
     )
     if session_id:
         _session_contact[session_id] = contact

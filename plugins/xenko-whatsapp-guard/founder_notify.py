@@ -12,6 +12,8 @@ import urllib.request
 logger = logging.getLogger(__name__)
 
 DEFAULT_FOUNDER_PHONE = "94760193094"
+DEFAULT_HOME_PHONE = "94741597999"
+
 _notified_keys: set[str] = set()
 
 
@@ -21,6 +23,18 @@ def founder_whatsapp_phone() -> str:
         os.environ.get("FOUNDER_WHATSAPP_PHONE")
         or os.environ.get("HERMES_PRIVILEGED_PHONE")
         or DEFAULT_FOUNDER_PHONE
+    ).strip()
+    digits = re.sub(r"[^\d]", "", raw)
+    if digits.startswith("0") and len(digits) >= 10:
+        digits = "94" + digits[1:]
+    return digits
+
+
+def home_whatsapp_phone() -> str:
+    """E.164 digits only (no +), home number for lead notifications."""
+    raw = (
+        os.environ.get("HOME_WHATSAPP_PHONE")
+        or DEFAULT_HOME_PHONE
     ).strip()
     digits = re.sub(r"[^\d]", "", raw)
     if digits.startswith("0") and len(digits) >= 10:
@@ -46,10 +60,13 @@ def notify_founder(
     *,
     session_id: str | None = None,
     dedupe_key: str | None = None,
+    destination: str | None = None,
 ) -> bool:
     """
     Post an outbound WhatsApp to the founder through the gateway bridge.
     Fails silently (logs only) so customer intake is never blocked.
+    
+    destination: "founder" (default), "home", or phone digits.
     """
     body = (message or "").strip()
     if not body:
@@ -61,6 +78,13 @@ def notify_founder(
             return False
 
     phone = founder_whatsapp_phone()
+    if destination == "home":
+        phone = home_whatsapp_phone()
+    elif destination and destination.isdigit():
+        phone = destination
+    elif destination and "@" in destination:
+        phone = destination
+    
     if not phone:
         logger.warning("Founder notify skipped: no FOUNDER_WHATSAPP_PHONE configured")
         return False
@@ -98,6 +122,7 @@ def notify_below_budget_web(
     budget_text: str = "",
     amount_lkr: int | None = None,
     phone: str | None = None,
+    destination: str | None = "home",
 ) -> None:
     who = name.strip() or "unknown"
     co = company.strip() or "unknown"
@@ -110,7 +135,7 @@ def notify_below_budget_web(
         f"budget: {budget}\n"
         f"whatsapp: {lead_phone}"
     )
-    notify_founder(msg, session_id=session_id, dedupe_key="below_budget")
+    notify_founder(msg, session_id=session_id, dedupe_key="below_budget", destination=destination)
 
 
 def notify_qualified_lead(
@@ -126,6 +151,7 @@ def notify_qualified_lead(
     phone: str | None = None,
     lead_type: str = "",
     below_budget: bool = False,
+    destination: str | None = "home",
 ) -> None:
     tag = "qualified lead"
     if below_budget:
@@ -149,4 +175,4 @@ def notify_qualified_lead(
         lines.append(f"email: {email.strip()}")
     if phone:
         lines.append(f"whatsapp: {phone.strip()}")
-    notify_founder("\n".join(lines), session_id=session_id, dedupe_key="qualified")
+    notify_founder("\n".join(lines), session_id=session_id, dedupe_key="qualified", destination=destination)
