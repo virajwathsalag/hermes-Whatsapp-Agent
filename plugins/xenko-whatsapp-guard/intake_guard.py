@@ -42,12 +42,16 @@ _session_lead_type: dict[str, str] = {}  # session_id -> web | marketing | unsur
 _session_returning_welcomed: set[str] = set()
 _session_freshly_synced: set[str] = set()  # phones that were just saved to CRM this session
 
-RETURNING_NEW_BUSINESS_STEPS = 4  # new company, industry, outcome, budget/timeline — then phone
-RETURNING_KNOWN_PROFILE_STEPS = 3  # same business: outcome, budget/timeline — then phone
+RETURNING_NEW_BUSINESS_STEPS = 5  # company, industry, outcome, budget, timeline — then phone
+RETURNING_KNOWN_PROFILE_STEPS = 3  # outcome, budget, timeline — then phone
 
-CLOSE_LINE = "our team will be in touch"
+CLOSE_LINE = (
+    "thank you for taking the time to share that with me. i have everything i need for now. "
+    "our founder will personally review your requirements and get in touch with you shortly. "
+    "we're looking forward to learning more about your business and exploring how we can help."
+)
 CLOSE_LINE_LEGACY = "our founder will be in touch"
-CLOSE_STEP = 5  # After step 4 (phone question is step 5)
+CLOSE_STEP = 6  # After step 5 (phone question is step 6)
 RETURNING_QUESTION = (
     "great to hear from you again. are you reaching out about your existing project, "
     "or is this something new you'd like help with?"
@@ -59,15 +63,16 @@ RETURNING_STEPS_KNOWN = {
     3: "when would you ideally like to get started?",
 }
 # No email step - CRM saves without email
-# 5-step intake - name, company+product, goal, budget+timeline, phone
-INTAKE_ANSWERS_REQUIRED = 5  # name, company, goal, budget/timeline, phone
+# 6-step intake - name, company, goal, budget, timeline, phone
+INTAKE_ANSWERS_REQUIRED = 6  # name, company, goal, budget, timeline, phone
 
 STEPS = {
     1: "what's your name?",
     2: "what's your company called and what do you sell?",
     3: "what are you trying to achieve? more customers, brand awareness, or something else?",
-    4: "one more thing — do you have a budget and timeline in mind?",
-    5: "is this the best number to reach you on, or do you have another one?",
+    4: "do you have a budget in mind for the project?",
+    5: "and when would you ideally like the website completed?",
+    6: "is this the best number to reach you on, or do you have another one?",
 }
 
 # Single message greeting - NO multi-part, NO marketing pitch in greeting
