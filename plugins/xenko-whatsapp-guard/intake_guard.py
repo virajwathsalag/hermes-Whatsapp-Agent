@@ -40,6 +40,7 @@ _session_crm_synced: set[str] = set()
 _session_below_budget: set[str] = set()
 _session_lead_type: dict[str, str] = {}  # session_id -> web | marketing | unsure | general
 _session_returning_welcomed: set[str] = set()
+_session_freshly_synced: set[str] = set()  # phones that were just saved to CRM this session
 
 RETURNING_NEW_BUSINESS_STEPS = 5  # new company: company, industry, outcome, budget, timeline
 RETURNING_KNOWN_PROFILE_STEPS = 3  # same business: outcome, budget, timeline — then email
@@ -775,6 +776,10 @@ def _extract_phone(session_id: str | None = None, **kwargs: Any) -> str | None:
 
 
 def _crm_lead_exists(phone: str) -> bool:
+    # First check: was this phone just synced to CRM in this session?
+    # If so, don't treat as returning - they're still in the same intake flow
+    if phone and phone in _session_freshly_synced:
+        return False
     try:
         import importlib.util
 
@@ -792,8 +797,12 @@ def _crm_lead_exists(phone: str) -> bool:
 
 
 def _had_prior_intake(phone: str | None, messages: list[tuple[str, str]]) -> bool:
+    # Don't treat as prior intake if this phone was just synced to CRM in this session
+    if phone and phone in _session_freshly_synced:
+        return False
     """GBrain history, CRM lead row, or this session already completed intake."""
-    if _completed_intake_in_messages(messages):
+    # Only check for close line in PRIOR messages, not current session
+    if _completed_intake_in_messages(messages, include_current_session=False):
         return True
     if not phone:
         return False
@@ -1487,6 +1496,8 @@ def _sync_crm_on_qualification(
         )
         if sid:
             _session_crm_synced.add(sid)
+        if phone:
+            _session_freshly_synced.add(phone)
         return result
     except Exception:
         return None
