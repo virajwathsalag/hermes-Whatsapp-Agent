@@ -939,7 +939,12 @@ def _is_intake_trigger(text: str) -> bool:
     )
 
 
-def _greeting_line_sent(messages: list[tuple[str, str]], step: int) -> bool:
+def _greeting_line_sent(messages: list[tuple[str, str]], step: int, session_id: str | None = None) -> bool:
+    # Check stored step for greeting mode
+    if session_id:
+        stored = _session_step.get(session_id, {})
+        if stored.get("mode") in ("greeting", "greeting_burst"):
+            return True
     needle = GREETING[:24].lower()
     return any(role == "assistant" and needle in content.lower() for role, content in messages)
 
@@ -949,8 +954,14 @@ def _welcome_message_text() -> str:
 
 
 def _greeting_burst_sent(messages: list[tuple[str, str]], session_id: str | None) -> bool:
+    # Check session state first
     if session_id and session_id in _session_greeting_burst:
         return True
+    # Check stored step for greeting mode
+    if session_id:
+        stored = _session_step.get(session_id, {})
+        if stored.get("mode") == "greeting_burst":
+            return True
     welcome = _welcome_message_text()
     needle = GREETING[:20].lower()
     return any(
@@ -963,7 +974,7 @@ def _greeting_burst_sent(messages: list[tuple[str, str]], session_id: str | None
 def _greeting_complete(messages: list[tuple[str, str]], session_id: str | None = None) -> bool:
     if _greeting_burst_sent(messages, session_id):
         return True
-    return _greeting_line_sent(messages, 1)
+    return _greeting_line_sent(messages, 1, session_id)
 
 
 def _step1_asked(messages: list[tuple[str, str]]) -> bool:
@@ -984,9 +995,9 @@ def _in_fresh_intake(session_id: str | None, messages: list[tuple[str, str]]) ->
     return stored.get("mode") == "intake" and int(stored.get("n") or 0) >= 1
 
 
-def _next_greeting_step(messages: list[tuple[str, str]]) -> int:
+def _next_greeting_step(messages: list[tuple[str, str]], session_id: str | None = None) -> int:
     """1 if greeting still needs sending; 0 if welcome is done."""
-    if not _greeting_line_sent(messages, 1):
+    if not _greeting_line_sent(messages, 1, session_id):
         return 1
     return 0
 
@@ -1916,7 +1927,7 @@ def compute_greeting_step(
             "n": 0,
         }
 
-    n = _next_greeting_step(messages)
+    n = _next_greeting_step(messages, session_id)
     if n == 0:
         return None
     return {
