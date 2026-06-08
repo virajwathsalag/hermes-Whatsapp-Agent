@@ -136,9 +136,11 @@ After timeline:
 
 > "Got it. What's the best email to reach you at?"
 
+**CRITICAL: After receiving email, go directly to Step 9: Close. Do NOT check returning customer scenarios. Do NOT ask clarifying questions. The intake is complete.**
+
 ### Step 9: Close
 
-After email:
+After receiving email (step 8 complete):
 
 > "Thank you for sharing that with me, [name]. Our founder will personally review your requirements and get in touch with you shortly. We're looking forward to learning more about your business and exploring how we can help."
 
