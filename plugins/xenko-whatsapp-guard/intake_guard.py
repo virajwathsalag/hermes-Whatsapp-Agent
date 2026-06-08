@@ -65,14 +65,8 @@ STEPS = {
     7: "what's the best email to reach you on?",
 }
 
-GREETING_LINES = {
-    1: "hi there, thanks for reaching out",
-    2: (
-        "we help businesses grow through websites, content marketing, "
-        "and sales systems that actually work"
-    ),
-    3: "how can we help today",
-}
+# Single message greeting - NO multi-part, NO marketing pitch in greeting
+GREETING = "hi there. thanks for reaching out. i'd be happy to help. what's your name?"
 
 WEB_INTAKE_RE = re.compile(
     r"\b(website|web site|web design|need a site|company website|online presence|"
@@ -870,19 +864,19 @@ def _is_intake_trigger(text: str) -> bool:
 
 
 def _greeting_line_sent(messages: list[tuple[str, str]], step: int) -> bool:
-    needle = GREETING_LINES[step][:24].lower()
+    needle = GREETING[:24].lower()
     return any(role == "assistant" and needle in content.lower() for role, content in messages)
 
 
 def _welcome_message_text() -> str:
-    return "\n\n".join([GREETING_LINES[1], GREETING_LINES[2], GREETING_LINES[3]])
+    return GREETING
 
 
 def _greeting_burst_sent(messages: list[tuple[str, str]], session_id: str | None) -> bool:
     if session_id and session_id in _session_greeting_burst:
         return True
     welcome = _welcome_message_text()
-    needle = GREETING_LINES[3][:20].lower()
+    needle = GREETING[:20].lower()
     return any(
         role == "assistant"
         and (needle in content.lower() or welcome.lower() in content.lower())
@@ -893,7 +887,7 @@ def _greeting_burst_sent(messages: list[tuple[str, str]], session_id: str | None
 def _greeting_complete(messages: list[tuple[str, str]], session_id: str | None = None) -> bool:
     if _greeting_burst_sent(messages, session_id):
         return True
-    return all(_greeting_line_sent(messages, n) for n in (1, 2, 3))
+    return _greeting_line_sent(messages, 1)
 
 
 def _step1_asked(messages: list[tuple[str, str]]) -> bool:
@@ -915,10 +909,9 @@ def _in_fresh_intake(session_id: str | None, messages: list[tuple[str, str]]) ->
 
 
 def _next_greeting_step(messages: list[tuple[str, str]]) -> int:
-    """1, 2, or 3 if that line still needs sending; 0 if welcome sequence is done."""
-    for n in (1, 2, 3):
-        if not _greeting_line_sent(messages, n):
-            return n
+    """1 if greeting still needs sending; 0 if welcome is done."""
+    if not _greeting_line_sent(messages, 1):
+        return 1
     return 0
 
 
@@ -1784,7 +1777,7 @@ def compute_greeting_step(
     return {
         "mode": "greeting",
         "greeting_n": n,
-        "message": GREETING_LINES[n],
+        "message": GREETING,
         "in_intake": True,
         "n": 0,
     }
@@ -2146,7 +2139,7 @@ def guard_response(text: str, step: dict[str, Any]) -> str:
     elif mode == "greeting_burst":
         out = step.get("message") or _welcome_message_text()
     elif mode == "greeting":
-        out = step.get("message") or GREETING_LINES[1]
+        out = step.get("message") or GREETING
     elif mode == "returning_ask":
         out = step.get("message") or RETURNING_QUESTION
     elif mode == "returning_welcome":
