@@ -2057,6 +2057,9 @@ def compute_intake_step(
                 "in_intake": True,
                 "mode": "returning_intake",
             }
+        # Track session step
+        if session_id:
+            _session_step[session_id] = {"n": 1, "message": STEPS[1], "in_intake": True, "mode": "intake"}
         return {"n": 1, "message": STEPS[1], "in_intake": True, "mode": "intake"}
 
     fresh = _continue_fresh_intake_step(
@@ -2074,6 +2077,9 @@ def compute_intake_step(
                 alt = compute_returning_step(session_id, session_messages, user_message, phone)
                 if alt:
                     return alt
+        # Track session step
+        if session_id:
+            _session_step[session_id] = {"n": 1, "message": STEPS[1], "in_intake": True, "mode": "intake"}
         return {"n": 1, "message": STEPS[1], "in_intake": True, "mode": "intake"}
 
     greeting = compute_greeting_step(session_messages, user_message, session_id)
@@ -2088,6 +2094,9 @@ def compute_intake_step(
         and _user_re_engaged(user_message)
         and not _step1_asked(messages)
     ):
+        # Track session step
+        if session_id:
+            _session_step[session_id] = {"n": 1, "message": STEPS[1], "in_intake": True, "mode": "intake"}
         return {"n": 1, "message": STEPS[1], "in_intake": True, "mode": "intake"}
 
     window = _active_intake_window(session_id, messages)
