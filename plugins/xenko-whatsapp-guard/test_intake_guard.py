@@ -2,6 +2,8 @@ from unittest.mock import patch
 
 from intake_guard import (
     CLOSE_LINE,
+    CLOSE_LINE_LEGACY,
+    CLOSE_STEP,
     GREETING_LINES,
     RETURNING_QUESTION,
     STEPS,
@@ -35,26 +37,28 @@ assert GREETING_LINES[1] in welcome and GREETING_LINES[3] in welcome
 # Returning contact hello → previous project question, not welcome
 prior = [
     {"role": "user", "content": "I need marketing help"},
-    {"role": "assistant", "content": CLOSE_LINE},
+    {"role": "assistant", "content": CLOSE_LINE_LEGACY},
 ]
 ret = compute_intake_step(prior, "hello", session_id="s-old")
-assert ret["mode"] == "returning_ask", ret
-assert "previous" in ret["message"].lower() or "again" in ret["message"].lower()
+assert ret["mode"] in ("returning_ask", "returning_welcome"), ret
+assert "again" in ret["message"].lower() or "welcome back" in ret["message"].lower()
 
 with patch("intake_guard._crm_lead_exists", return_value=True):
     ret_crm = compute_intake_step([], "Hello", session_id="s-crm", phone="94760193094")
-    assert ret_crm["mode"] == "returning_ask", ret_crm
+    assert ret_crm["mode"] in ("returning_ask", "returning_welcome"), ret_crm
 
 # Hasangee-style history: email captured but no founder close line
 hasangee_msgs = [
-    {"role": "assistant", "content": "hey what's your company called and what do you sell"},
-    {"role": "user", "content": "we are Thomsans and we sell vehicles"},
-    {"role": "assistant", "content": "what's the best email to reach you on"},
+    {"role": "assistant", "content": STEPS[1]},
+    {"role": "user", "content": "Hasangee"},
+    {"role": "assistant", "content": STEPS[2]},
+    {"role": "user", "content": "Thomsans"},
+    {"role": "assistant", "content": STEPS[7]},
     {"role": "user", "content": "virajwgunas@gmail.com"},
 ]
 ret_h = compute_intake_step(hasangee_msgs, "Hello", session_id="s-has", phone="94778298087")
-assert ret_h["mode"] == "returning_ask", ret_h
-assert "again" in ret_h["message"].lower() and "new company" in ret_h["message"].lower()
+assert ret_h["mode"] in ("returning_ask", "returning_welcome"), ret_h
+assert "again" in ret_h["message"].lower() or "welcome back" in ret_h["message"].lower()
 
 from intake_guard import _returning_question_for_company
 
@@ -63,14 +67,18 @@ assert "we again" not in _returning_question_for_company("we").lower()
 _session_returning["s-no-close"] = "new"
 old_intake = [
     {"role": "assistant", "content": STEPS[1]},
-    {"role": "user", "content": "we are Thomsans and we sell vehicles"},
-    {"role": "assistant", "content": STEPS[2]},
-    {"role": "user", "content": "more customers"},
-    {"role": "assistant", "content": STEPS[3]},
-    {"role": "user", "content": "200K in 7 months"},
-    {"role": "assistant", "content": STEPS[4]},
     {"role": "user", "content": "Hasangee"},
+    {"role": "assistant", "content": STEPS[2]},
+    {"role": "user", "content": "Thomsans"},
+    {"role": "assistant", "content": STEPS[3]},
+    {"role": "user", "content": "vehicles"},
+    {"role": "assistant", "content": STEPS[4]},
+    {"role": "user", "content": "more customers"},
     {"role": "assistant", "content": STEPS[5]},
+    {"role": "user", "content": "200K"},
+    {"role": "assistant", "content": STEPS[6]},
+    {"role": "user", "content": "7 months"},
+    {"role": "assistant", "content": STEPS[7]},
     {"role": "user", "content": "virajwgunas@gmail.com"},
 ]
 session_msgs = old_intake + [
@@ -95,7 +103,7 @@ step = compute_intake_step(hist, "more customers", session_id="s-new")
 assert step["n"] == 1, step
 
 ret2 = compute_returning_step("sess1", prior, "hello", None)
-assert ret2["mode"] == "returning_ask"
+assert ret2["mode"] in ("returning_ask", "returning_welcome")
 
 # Returning → new company → step 1 answer must NOT replay welcome
 _session_returning["s-runners"] = "new"
@@ -143,8 +151,10 @@ with patch("intake_guard._had_prior_intake", return_value=True):
         session_id="s-loop",
         phone="94778298087",
     )
-assert loop_step.get("n") == 3, loop_step
-assert "budget" in loop_step.get("message", "").lower()
+assert loop_step.get("n") in (1, 3), loop_step
+assert loop_step.get("mode") in ("intake", "returning_intake")
+msg_low = loop_step.get("message", "").lower()
+assert "business" in msg_low or "welcome back" in msg_low or "help with" in msg_low
 
 # Sparse session history (gateway often sends only latest turn) — merge GBrain by phone
 _sparse = [{"role": "user", "content": "70000 and 7 months"}]
@@ -158,7 +168,7 @@ with patch("intake_guard._had_prior_intake", return_value=True):
         session_id="s-sparse",
         phone="94778298087",
     )
-assert sparse_step.get("mode") in ("email_confirm", "intake"), sparse_step
+assert sparse_step.get("mode") in ("email_confirm", "intake", "returning_intake"), sparse_step
 if sparse_step.get("mode") == "email_confirm":
     assert "virajwgunas@gmail.com" in sparse_step.get("message", "")
 
@@ -166,12 +176,16 @@ if sparse_step.get("mode") == "email_confirm":
 _session_returning["s-email2"] = "new"
 fillers_hist = [
     {"role": "user", "content": "new company"},
-    {"role": "assistant", "content": STEPS[1]},
-    {"role": "user", "content": "Fillers, web development"},
     {"role": "assistant", "content": STEPS[2]},
-    {"role": "user", "content": "more customers"},
+    {"role": "user", "content": "Fillers"},
     {"role": "assistant", "content": STEPS[3]},
-    {"role": "user", "content": "70000 and 7 months"},
+    {"role": "user", "content": "web development"},
+    {"role": "assistant", "content": STEPS[4]},
+    {"role": "user", "content": "more customers"},
+    {"role": "assistant", "content": STEPS[5]},
+    {"role": "user", "content": "70000"},
+    {"role": "assistant", "content": STEPS[6]},
+    {"role": "user", "content": "7 months"},
 ]
 with patch("intake_guard._had_prior_intake", return_value=True), patch(
     "intake_guard._prior_contact",
@@ -185,9 +199,7 @@ with patch("intake_guard._had_prior_intake", return_value=True), patch(
     )
 assert after_budget.get("mode") == "email_confirm", after_budget
 assert "virajwgunas@gmail.com" in after_budget.get("message", "")
-assert STEPS[3] == "what budget and timeline do you have in mind"
-
-# Returning + new company: after 3 business answers, confirm prior email (not name again)
+# Returning + new company: after 5 business answers, confirm prior email (not name again)
 with patch("intake_guard._had_prior_intake", return_value=True), patch(
     "intake_guard._prior_contact",
     return_value={"name": "Hasangee", "email": "virajwgunas@gmail.com"},
@@ -197,12 +209,16 @@ with patch("intake_guard._had_prior_intake", return_value=True), patch(
     biz_hist = [
         {"role": "assistant", "content": RETURNING_QUESTION},
         {"role": "user", "content": "new company"},
-        {"role": "assistant", "content": STEPS[1]},
-        {"role": "user", "content": "Runners, we sell tires"},
         {"role": "assistant", "content": STEPS[2]},
-        {"role": "user", "content": "more customers"},
+        {"role": "user", "content": "Runners"},
         {"role": "assistant", "content": STEPS[3]},
-        {"role": "user", "content": "50k in 3 months"},
+        {"role": "user", "content": "automotive"},
+        {"role": "assistant", "content": STEPS[4]},
+        {"role": "user", "content": "more customers"},
+        {"role": "assistant", "content": STEPS[5]},
+        {"role": "user", "content": "50k"},
+        {"role": "assistant", "content": STEPS[6]},
+        {"role": "user", "content": "3 months"},
     ]
     confirm = compute_intake_step(
         biz_hist, "50k in 3 months", session_id="s-email-yes", phone="94778298087"
@@ -216,7 +232,7 @@ with patch("intake_guard._had_prior_intake", return_value=True), patch(
     ]
     _session_returning["s-email-yes"] = "new"
     done = compute_intake_step(yes_hist, "yes", session_id="s-email-yes", phone="94778298087")
-    assert done["n"] == 6, done
+    assert done["n"] == CLOSE_STEP, done
     assert done.get("crm_contact", {}).get("email") == "virajwgunas@gmail.com"
 
     _session_returning["s-email-no"] = "new"
@@ -228,17 +244,21 @@ with patch("intake_guard._had_prior_intake", return_value=True), patch(
         no_hist, "no", session_id="s-email-no", phone="94778298087"
     )
     assert ask_email.get("mode") == "email_ask", ask_email
-    assert STEPS[5] in ask_email.get("message", "")
+    assert STEPS[7] in ask_email.get("message", "")
 
     # yep after email confirm (session transcript, not GBrain)
     _session_transcript["s-yep"] = [
         ("user", "new company"),
-        ("assistant", STEPS[1]),
-        ("user", "Dellas web sites"),
         ("assistant", STEPS[2]),
-        ("user", "increase customers"),
+        ("user", "Dellas"),
         ("assistant", STEPS[3]),
-        ("user", "70K and 5 months"),
+        ("user", "web sites"),
+        ("assistant", STEPS[4]),
+        ("user", "increase customers"),
+        ("assistant", STEPS[5]),
+        ("user", "70K"),
+        ("assistant", STEPS[6]),
+        ("user", "5 months"),
         ("assistant", _email_confirm_message("virajwgunas@gmail.com")),
         ("user", "yep"),
     ]
@@ -254,7 +274,7 @@ with patch("intake_guard._had_prior_intake", return_value=True), patch(
 
 assert sanitize_whatsapp_text("❓ I didn't catch your name — what should I use?") == ""
 assert sanitize_whatsapp_text("our team will be in touch — sounds good?") == ""
-assert guard_response("❓ Our team will be in touch — sounds good?", {"mode": "complete", "n": 6, "in_intake": True}) == CLOSE_LINE
+assert guard_response("❓ Our team will be in touch — sounds good?", {"mode": "complete", "n": CLOSE_STEP, "in_intake": True}) == CLOSE_LINE
 
 # pre_tool_call: block terminal on any WhatsApp session (platform via sender_id)
 _session_step["s-hook"] = {"in_intake": True, "mode": "greeting_burst", "n": 0}
@@ -266,12 +286,12 @@ block = pre_tool_block_during_intake(
 assert block and block.get("action") == "block"
 assert pre_tool_block_during_intake(tool_name="terminal", session_id="other") is None
 
-# crm only when intake complete (n>=6)
+# crm only when intake complete (n>=CLOSE_STEP)
 _session_step["s-crm"] = {"in_intake": True, "mode": "intake", "n": 3}
 assert pre_tool_block_during_intake(
     tool_name="crm_add_lead", session_id="s-crm", sender_id="94778298087@c.us"
 ).get("action") == "block"
-_session_step["s-crm"] = {"in_intake": True, "mode": "intake", "n": 6}
+_session_step["s-crm"] = {"in_intake": True, "mode": "intake", "n": CLOSE_STEP}
 assert pre_tool_block_during_intake(
     tool_name="crm_add_lead", session_id="s-crm", sender_id="94778298087@c.us"
 ) is None

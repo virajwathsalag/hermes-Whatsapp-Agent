@@ -22,6 +22,18 @@ build/
 .DS_Store
 Thumbs.db
 
+# Windows reserved names (causes git errors)
+nul
+prn
+aux
+con
+NUL
+PRN
+AUX
+CON
+LPT0 LPT1 LPT2 LPT3 LPT4 LPT5 LPT6 LPT7 LPT8 LPT9
+COM1 COM2 COM3 COM4 COM5 COM6 COM7 COM8 COM9
+
 # Logs
 *.log
 

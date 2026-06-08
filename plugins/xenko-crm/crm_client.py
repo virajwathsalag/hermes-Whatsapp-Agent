@@ -238,9 +238,39 @@ def parse_intake_answers(
 ) -> dict[str, str]:
     """
     Map WhatsApp intake answers to structured CRM fields.
-    Order: company/what they sell, goal, budget+timeline, name, email.
+    Current order: name, company, industry, outcome, budget, timeline, email.
+    Legacy order (5 answers): company/what they sell, goal, budget+timeline, name, email.
     """
     clean = [a.strip() for a in answers if (a or "").strip()]
+
+    if len(clean) >= 6 and not any(_EMAIL_RE.search(a) for a in clean[:3]):
+        name = clean[0] if len(clean) > 0 else ""
+        company = clean[1] if len(clean) > 1 else ""
+        industry = clean[2] if len(clean) > 2 else ""
+        goal = clean[3] if len(clean) > 3 else ""
+        budget = clean[4] if len(clean) > 4 else ""
+        timeline = clean[5] if len(clean) > 5 else ""
+        budget_timeline = "; ".join(p for p in (budget, timeline) if p)
+        what_they_sell = industry or company
+        email = ""
+        for ans in clean[6:]:
+            em = _EMAIL_RE.search(ans)
+            if em:
+                email = em.group(0)
+        for ans in reversed(clean):
+            em = _EMAIL_RE.search(ans)
+            if em and not email:
+                email = em.group(0)
+        if not company:
+            company = _sanitize_text(company_hint, max_len=200)
+        return {
+            "what_they_sell": what_they_sell,
+            "goal": goal,
+            "budget_timeline": budget_timeline,
+            "name": name,
+            "email": email,
+            "company": company,
+        }
 
     what_they_sell = clean[0] if len(clean) > 0 else ""
     goal = clean[1] if len(clean) > 1 else ""
