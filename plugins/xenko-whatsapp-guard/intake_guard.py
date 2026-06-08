@@ -7,7 +7,6 @@ import logging
 import os
 import re
 import sqlite3
-import time
 from pathlib import Path
 from typing import Any
 
@@ -42,10 +41,9 @@ _session_below_budget: set[str] = set()
 _session_lead_type: dict[str, str] = {}  # session_id -> web | marketing | unsure | general
 _session_returning_welcomed: set[str] = set()
 _session_freshly_synced: set[str] = set()  # phones that were just saved to CRM this session
-_session_closed_at: dict[str, float] = {}  # session_id -> timestamp when intake closed
 
-RETURNING_NEW_BUSINESS_STEPS = 5  # new company: company, industry, outcome, budget, timeline — then email
-RETURNING_KNOWN_PROFILE_STEPS = 3  # outcome, budget, timeline — then email
+RETURNING_NEW_BUSINESS_STEPS = 5  # new company: company, industry, outcome, budget, timeline
+RETURNING_KNOWN_PROFILE_STEPS = 3  # same business: outcome, budget, timeline — then email
 
 CLOSE_LINE = (
     "thank you for taking the time to share that with me. i have everything i need for now. "
@@ -53,7 +51,7 @@ CLOSE_LINE = (
     "we're looking forward to learning more about your business and exploring how we can help."
 )
 CLOSE_LINE_LEGACY = "our founder will be in touch"
-CLOSE_STEP = 5  # After step 5 (no email)
+CLOSE_STEP = 8
 RETURNING_QUESTION = (
     "great to hear from you again. are you reaching out about your existing project, "
     "or is this something new you'd like help with?"
@@ -64,45 +62,21 @@ RETURNING_STEPS_KNOWN = {
     2: "do you already have a budget in mind?",
     3: "when would you ideally like to get started?",
 }
-# No email step - CRM saves without email
-# 6-step intake - name, company, industry, goal, budget, timeline (no email)
-INTAKE_ANSWERS_REQUIRED = 5  # name, company, industry, goal, budget, timeline
+INTAKE_ANSWERS_REQUIRED = 7  # name, company, industry, outcome, budget, timeline, email
+WEB_MIN_BUDGET_LKR = 100_000
 
 STEPS = {
-    1: "what's your name?",
-    2: "what's your business called?",
+    1: "before we get started, what's your name?",
+    2: "what's the name of your business?",
     3: "what kind of business are you in?",
     4: "what are you hoping to achieve?",
-    5: "do you have a budget in mind?",
+    5: "do you already have a budget in mind?",
     6: "when would you ideally like to get started?",
+    7: "what's the best email to reach you on?",
 }
 
-# Single message greeting - human style, not form-like
-GREETING = "hi there. thanks for reaching out. i'd be happy to help."
-
-# Natural acknowledgments between intake questions
-ACKS = {
-    1: "nice to meet you.",  # after name
-    2: "got it.",  # after company
-    3: "nice.",  # after industry
-    4: "that makes sense.",  # after goal
-    5: "thanks for sharing that.",  # after budget
-    6: "perfect.",  # after timeline
-}
-
-
-def _ack_with_next_question(step: int) -> str:
-    """Return acknowledgment + next question for the given completed step."""
-    if step < 1 or step > 6:
-        return STEPS.get(step, "")
-    ack = ACKS.get(step, "")
-    next_step = step + 1
-    if next_step <= 7:
-        next_q = STEPS[next_step]
-        if ack:
-            return f"{ack} {next_q}"
-        return next_q
-    return ack
+# Single message greeting - NO multi-part, NO marketing pitch in greeting
+GREETING = "hi there. thanks for reaching out. i'd be happy to help. what's your name?"
 
 WEB_INTAKE_RE = re.compile(
     r"\b(website|web site|web design|need a site|company website|online presence|"
@@ -527,16 +501,9 @@ def _below_budget_close_line(name: str = "") -> str:
 
 def _close_line_for_session(session_id: str | None, contact: dict[str, str] | None = None) -> str:
     sid = session_id or ""
-    # Get name from contact or session
-    name = (contact or {}).get("name") or (_session_contact.get(sid) or {}).get("name") or ""
-    first = _first_name(name) if name else ""
-    
     if sid in _session_below_budget:
-        return _below_budget_close_line(first)
-    
-    # Personalize close message with name
-    if first:
-        return f"thank you for sharing that with me, {first}. i have everything i need for now. our founder will personally review your requirements and get in touch with you shortly. we're looking forward to learning more about your business and exploring how we can help."
+        name = (contact or {}).get("name") or (_session_contact.get(sid) or {}).get("name") or ""
+        return _below_budget_close_line(name)
     return CLOSE_LINE
 
 
@@ -808,12 +775,7 @@ def _extract_phone(session_id: str | None = None, **kwargs: Any) -> str | None:
     return _resolve_phone(session_id, **kwargs)
 
 
-def _crm_lead_exists(phone: str, session_id: str | None = None) -> bool:
-    # First check: is this session already in intake flow?
-    # If so, don't treat as returning - they're mid-intake
-    step = _session_step.get(session_id)
-    if step and isinstance(step, dict) and step.get("n", 0) > 0:
-        return False
+def _crm_lead_exists(phone: str) -> bool:
     # First check: was this phone just synced to CRM in this session?
     # If so, don't treat as returning - they're still in the same intake flow
     if phone and phone in _session_freshly_synced:
@@ -834,11 +796,7 @@ def _crm_lead_exists(phone: str, session_id: str | None = None) -> bool:
         return False
 
 
-def _had_prior_intake(phone: str | None, messages: list[tuple[str, str]], session_id: str | None = None) -> bool:
-    # Don't treat as prior intake if this session is already in intake flow
-    step = _session_step.get(session_id)
-    if step and isinstance(step, dict) and step.get("n", 0) > 0:
-        return False
+def _had_prior_intake(phone: str | None, messages: list[tuple[str, str]]) -> bool:
     # Don't treat as prior intake if this phone was just synced to CRM in this session
     if phone and phone in _session_freshly_synced:
         return False
@@ -865,7 +823,7 @@ def _had_prior_intake(phone: str | None, messages: list[tuple[str, str]], sessio
             return True
     except Exception:
         pass
-    if _crm_lead_exists(phone, session_id):
+    if _crm_lead_exists(phone):
         return True
     return False
 
@@ -938,12 +896,7 @@ def _is_intake_trigger(text: str) -> bool:
     )
 
 
-def _greeting_line_sent(messages: list[tuple[str, str]], step: int, session_id: str | None = None) -> bool:
-    # Check stored step for greeting mode
-    if session_id:
-        stored = _session_step.get(session_id, {})
-        if stored.get("mode") in ("greeting", "greeting_burst"):
-            return True
+def _greeting_line_sent(messages: list[tuple[str, str]], step: int) -> bool:
     needle = GREETING[:24].lower()
     return any(role == "assistant" and needle in content.lower() for role, content in messages)
 
@@ -953,14 +906,8 @@ def _welcome_message_text() -> str:
 
 
 def _greeting_burst_sent(messages: list[tuple[str, str]], session_id: str | None) -> bool:
-    # Check session state first
     if session_id and session_id in _session_greeting_burst:
         return True
-    # Check stored step for greeting mode
-    if session_id:
-        stored = _session_step.get(session_id, {})
-        if stored.get("mode") == "greeting_burst":
-            return True
     welcome = _welcome_message_text()
     needle = GREETING[:20].lower()
     return any(
@@ -973,7 +920,7 @@ def _greeting_burst_sent(messages: list[tuple[str, str]], session_id: str | None
 def _greeting_complete(messages: list[tuple[str, str]], session_id: str | None = None) -> bool:
     if _greeting_burst_sent(messages, session_id):
         return True
-    return _greeting_line_sent(messages, 1, session_id)
+    return _greeting_line_sent(messages, 1)
 
 
 def _step1_asked(messages: list[tuple[str, str]]) -> bool:
@@ -994,9 +941,9 @@ def _in_fresh_intake(session_id: str | None, messages: list[tuple[str, str]]) ->
     return stored.get("mode") == "intake" and int(stored.get("n") or 0) >= 1
 
 
-def _next_greeting_step(messages: list[tuple[str, str]], session_id: str | None = None) -> int:
+def _next_greeting_step(messages: list[tuple[str, str]]) -> int:
     """1 if greeting still needs sending; 0 if welcome is done."""
-    if not _greeting_line_sent(messages, 1, session_id):
+    if not _greeting_line_sent(messages, 1):
         return 1
     return 0
 
@@ -1328,7 +1275,7 @@ def _is_returning_new_project(
     sid = session_id or ""
     if _session_returning.get(sid) != "new":
         return False
-    return _had_prior_intake(phone, messages, session_id)
+    return _had_prior_intake(phone, messages)
 
 
 def _email_confirm_message(email: str) -> str:
@@ -1502,78 +1449,6 @@ def _load_crm_client():
     return mod
 
 
-def _intake_complete_save_crm(
-    session_id: str | None,
-    phone: str | None,
-    window: list[tuple[str, str]],
-    scope: list[tuple[str, str]],
-) -> None:
-    """Save lead to CRM when intake completes."""
-    sid = session_id or ""
-    if sid and sid in _session_crm_synced:
-        return
-    if not _valid_whatsapp_phone(phone):
-        return
-
-    # Get answers from window
-    answers = [msg for role, msg in window if role == "user"]
-    if len(answers) < 6:
-        return
-
-    crm = _load_crm_client()
-    if not crm:
-        return
-
-    # Extract contact info from scope messages
-    contact = {}
-    for role, msg in scope:
-        if role == "user":
-            lc = msg.lower().strip()
-            if "@" in lc and ".com" in lc:
-                contact["email"] = msg.strip()
-            elif contact.get("name"):
-                continue
-            elif len(lc.split()) <= 3 and not any(
-                w in lc for w in ["company", "sell", "business"]
-            ):
-                contact["name"] = msg.strip()
-
-    # Get name from first answer
-    name = answers[0].strip() if answers else ""
-    company = answers[1].strip() if len(answers) > 1 else ""
-
-    parsed = crm.parse_intake_answers(answers, company_hint=company)
-    if not name or name.lower() == "unknown":
-        name = parsed.get("name") or ""
-
-    if not name:
-        return
-
-    try:
-        result = crm.add_or_update_lead(
-            name=name,
-            phone=phone or "",
-            email=contact.get("email", ""),
-            company=company,
-            notes=_intake_notes_from_answers(answers, company=company, session_id=session_id),
-            source="WhatsApp",
-            lead_status="Qualified",
-            qualification_label=crm.infer_qualification_label(
-                parsed.get("budget_timeline") or "",
-                parsed.get("goal") or "",
-            ),
-            what_they_sell=parsed.get("what_they_sell") or "",
-            goal=parsed.get("goal") or "",
-            budget_timeline=parsed.get("budget_timeline") or "",
-        )
-        if sid:
-            _session_crm_synced.add(sid)
-        if phone:
-            _session_freshly_synced.add(phone)
-    except Exception:
-        pass
-
-
 def _sync_crm_on_qualification(
     session_id: str | None,
     phone: str | None,
@@ -1599,7 +1474,8 @@ def _sync_crm_on_qualification(
     company = (contact.get("company") or parsed.get("company") or "").strip()
     if not name or name.lower() == "unknown":
         return None
-    # Allow CRM sync WITHOUT email - save lead with name + company info
+    if not email:
+        return None
 
     try:
         result = crm.add_or_update_lead(
@@ -1648,8 +1524,9 @@ def _intake_notes_from_answers(
         "Outcome",
         "Budget",
         "Timeline",
+        "Email",
     )
-    for i, ans in enumerate(answers[:6]):
+    for i, ans in enumerate(answers[:7]):
         label = labels[i] if i < len(labels) else f"Answer {i + 1}"
         if EMAIL_RE.search(ans) and i < 6:
             continue
@@ -1693,7 +1570,6 @@ def _complete_with_contact(
     if session_id:
         _session_contact[session_id] = contact
         _session_intake_closed.add(session_id)
-        _session_closed_at[session_id] = time.time()
         _session_step[session_id] = {
             **(_session_step.get(session_id) or {}),
             "_prior_contact": contact,
@@ -1755,15 +1631,19 @@ def _returning_new_contact_step(
                 answers,
                 email=prior["email"],
             )
-        # User declined prior email - just close without asking for new email
-        return _complete_with_contact(
-            session_id,
-            phone,
-            messages,
-            window,
-            answers,
-            email="",  # No email required
-        )
+        if _user_declines_prior_email(user_message):
+            return {
+                "n": 7,
+                "message": STEPS[7],
+                "in_intake": True,
+                "mode": "email_ask",
+            }
+        return {
+            "mode": "email_confirm",
+            "n": 4,
+            "message": _email_confirm_message(prior["email"]),
+            "in_intake": True,
+        }
 
     return {
         "mode": "email_confirm",
@@ -1775,10 +1655,10 @@ def _returning_new_contact_step(
 
 
 def _can_complete_intake(window: list[tuple[str, str]], answers: list[str]) -> bool:
-    # Must have all required answers first
     if len(answers) < INTAKE_ANSWERS_REQUIRED:
         return False
-    # Then verify the questions were asked
+    if not any(EMAIL_RE.search(a) for a in answers):
+        return False
     intake_markers = (
         "your name",
         "company called",
@@ -1786,7 +1666,8 @@ def _can_complete_intake(window: list[tuple[str, str]], answers: list[str]) -> b
         "kind of business",
         "hoping to achieve",
         "budget",
-        "get started",
+        "email to reach",
+        "best email",
     )
     assistant_text = " ".join(c.lower() for r, c in window if r == "assistant")
     if not any(m in assistant_text for m in intake_markers):
@@ -1897,7 +1778,7 @@ def _continue_fresh_intake_step(
             "mode": "intake",
         }
     if int(stored.get("n") or 0) == 1 and stored.get("mode") == "intake":
-        return {"n": 2, "message": _ack_with_next_question(1), "in_intake": True, "mode": "intake"}
+        return {"n": 2, "message": STEPS[2], "in_intake": True, "mode": "intake"}
     return None
 
 
@@ -1926,7 +1807,7 @@ def compute_greeting_step(
             "n": 0,
         }
 
-    n = _next_greeting_step(messages, session_id)
+    n = _next_greeting_step(messages)
     if n == 0:
         return None
     return {
@@ -1979,7 +1860,7 @@ def compute_returning_step(
             "in_intake": True,
         }
 
-    if not _had_prior_intake(phone, messages, session_id):
+    if not _had_prior_intake(phone, messages):
         return None
     all_msgs = _merged_messages(session_messages, phone) if phone else messages
 
@@ -2113,21 +1994,14 @@ def compute_intake_step(
     messages = _merged_messages(conversation_history, phone)
     sid = session_id or ""
     if sid and sid in _session_intake_closed:
-        # Check silent period: if within 60 seconds of close, stay silent
-        closed_at = _session_closed_at.get(sid, 0)
-        if closed_at and (time.time() - closed_at < 60):
-            # Within silent period - only respond to short acks
-            if SHORT_ACK_RE.match((user_message or "").strip()):
-                return {
-                    "n": CLOSE_STEP,
-                    "message": _close_line_for_session(session_id),
-                    "in_intake": True,
-                    "mode": "complete",
-                }
-            return {"n": 0, "message": "", "in_intake": False, "mode": "idle"}
-        # Silent period over - treat as returning client
-        _session_returning[sid] = "new"
-        _session_intake_closed.discard(sid)
+        if SHORT_ACK_RE.match((user_message or "").strip()):
+            return {
+                "n": CLOSE_STEP,
+                "message": _close_line_for_session(session_id),
+                "in_intake": True,
+                "mode": "complete",
+            }
+        return {"n": 0, "message": "", "in_intake": False, "mode": "idle"}
 
     if user_message:
         last = messages[-1] if messages else None
@@ -2158,9 +2032,6 @@ def compute_intake_step(
                 "in_intake": True,
                 "mode": "returning_intake",
             }
-        # Track session step
-        if session_id:
-            _session_step[session_id] = {"n": 1, "message": STEPS[1], "in_intake": True, "mode": "intake"}
         return {"n": 1, "message": STEPS[1], "in_intake": True, "mode": "intake"}
 
     fresh = _continue_fresh_intake_step(
@@ -2178,9 +2049,6 @@ def compute_intake_step(
                 alt = compute_returning_step(session_id, session_messages, user_message, phone)
                 if alt:
                     return alt
-        # Track session step
-        if session_id:
-            _session_step[session_id] = {"n": 1, "message": STEPS[1], "in_intake": True, "mode": "intake"}
         return {"n": 1, "message": STEPS[1], "in_intake": True, "mode": "intake"}
 
     greeting = compute_greeting_step(session_messages, user_message, session_id)
@@ -2193,12 +2061,8 @@ def compute_intake_step(
     if (
         _greeting_complete(messages, session_id)
         and _user_re_engaged(user_message)
-        and not _step1_asked_fresh(session_id, messages)
+        and not _step1_asked(messages)
     ):
-        # Mark session as fresh intake so it doesn't check returning paths
-        if session_id:
-            _session_returning[session_id] = "new"
-            _session_step[session_id] = {"n": 1, "message": STEPS[1], "in_intake": True, "mode": "intake"}
         return {"n": 1, "message": STEPS[1], "in_intake": True, "mode": "intake"}
 
     window = _active_intake_window(session_id, messages)
@@ -2237,16 +2101,7 @@ def compute_intake_step(
 
     if not _can_complete_intake(window, answers):
         n = _next_intake_step_number(window, answers)
-        msg = _ack_with_next_question(n - 1) if n > 1 else STEPS[n]
-        return {"n": n, "message": msg, "in_intake": True, "mode": "intake"}
-
-    # Intake complete - save to CRM
-    _intake_complete_save_crm(session_id, phone, window, scope)
-
-    # Track session as closed for silent period
-    if session_id:
-        _session_intake_closed.add(session_id)
-        _session_closed_at[session_id] = time.time()
+        return {"n": n, "message": STEPS[n], "in_intake": True, "mode": "intake"}
 
     return {
         "n": CLOSE_STEP,
@@ -2336,8 +2191,7 @@ def guard_response(text: str, step: dict[str, Any]) -> str:
     elif mode == "email_confirm":
         out = step.get("message") or _email_confirm_message("")
     elif mode == "email_ask":
-        # No longer used - email step removed
-        out = step.get("message") or CLOSE_LINE
+        out = step.get("message") or STEPS[7]
     elif mode == "complete" or int(step.get("n") or 0) >= CLOSE_STEP:
         out = step.get("message") or CLOSE_LINE
     elif not step.get("in_intake"):
@@ -2513,16 +2367,7 @@ def pre_tool_block_during_intake(tool_name: str = "", session_id: str = "", **kw
             return {"action": "block", "message": "Complete intake before CRM."}
         return None
 
-    # Allow send_message when intake is complete (n >= CLOSE_STEP)
     if name in _NON_CRM_TOOLS_BLOCKED:
-        # If intake complete, allow send_message
-        if name == "send_message" and (
-            step.get("mode") == "complete" 
-            or int(step.get("n") or 0) >= CLOSE_STEP
-            or not step.get("in_intake")
-        ):
-            return None
-        # Otherwise block
         return {
             "action": "block",
             "message": (
