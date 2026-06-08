@@ -20,7 +20,7 @@ For marketing help or new leads on WhatsApp:
 2. Goal  
 3. Budget + timeline  
 4. Score internally (qualified vs not) — user never sees the score  
-5. If qualified: name, then email, then `our team will be in touch`  
+5. If qualified: name, then phone, then `our team will be in touch`  
 6. If not qualified: one polite exit line from qualification-framework.md  
 
 Do not ask name or email before steps 1–3 are answered in the **current** conversation (ignore older leads in history unless they said new company).

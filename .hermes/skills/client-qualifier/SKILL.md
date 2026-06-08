@@ -12,7 +12,7 @@ metadata:
 ## When to use
 On WhatsApp when someone asks for marketing help, leads, website, or says they want to work with Xenko.
 
-## The 6-Step Intake (no email)
+## The 5-Step Intake (no email)
 
 Run these in order, ONE question per message, wait for reply before next:
 
@@ -20,7 +20,7 @@ Run these in order, ONE question per message, wait for reply before next:
 2. **Company + what they sell** — "nice to meet you [name]. what's your company called and what do you sell?"
 3. **Goal** — "got it. what are you trying to achieve? more customers, brand awareness, or something else?"
 4. **Budget + timeline** — "one more thing — do you have a budget and timeline in mind?"
-5. **Their email** — "got it. what's the best email to reach you at?"
+5. **Phone number** — "got it. is this the best number to reach you on, or do you have another one?"
 
 After step 5: `our team will be in touch`
 
@@ -53,7 +53,6 @@ After closing, call:
 crm_add_lead(
   name="{name}",
   phone="{whatsapp_number}",
-  email="{email}",
   company="{company}",
   what_they_sell="{what_they_sell}",
   goal="{goal}",
