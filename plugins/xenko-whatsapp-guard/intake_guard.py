@@ -807,7 +807,11 @@ def _extract_phone(session_id: str | None = None, **kwargs: Any) -> str | None:
     return _resolve_phone(session_id, **kwargs)
 
 
-def _crm_lead_exists(phone: str) -> bool:
+def _crm_lead_exists(phone: str, session_id: str | None = None) -> bool:
+    # First check: is this session already in intake flow?
+    # If so, don't treat as returning - they're mid-intake
+    if session_id and _session_step.get(session_id, 0) > 0:
+        return False
     # First check: was this phone just synced to CRM in this session?
     # If so, don't treat as returning - they're still in the same intake flow
     if phone and phone in _session_freshly_synced:
@@ -828,7 +832,10 @@ def _crm_lead_exists(phone: str) -> bool:
         return False
 
 
-def _had_prior_intake(phone: str | None, messages: list[tuple[str, str]]) -> bool:
+def _had_prior_intake(phone: str | None, messages: list[tuple[str, str]], session_id: str | None = None) -> bool:
+    # Don't treat as prior intake if this session is already in intake flow
+    if session_id and _session_step.get(session_id, 0) > 0:
+        return False
     # Don't treat as prior intake if this phone was just synced to CRM in this session
     if phone and phone in _session_freshly_synced:
         return False
@@ -855,7 +862,7 @@ def _had_prior_intake(phone: str | None, messages: list[tuple[str, str]]) -> boo
             return True
     except Exception:
         pass
-    if _crm_lead_exists(phone):
+    if _crm_lead_exists(phone, session_id):
         return True
     return False
 
@@ -1307,7 +1314,7 @@ def _is_returning_new_project(
     sid = session_id or ""
     if _session_returning.get(sid) != "new":
         return False
-    return _had_prior_intake(phone, messages)
+    return _had_prior_intake(phone, messages, session_id)
 
 
 def _email_confirm_message(email: str) -> str:
@@ -1885,7 +1892,7 @@ def compute_returning_step(
             "in_intake": True,
         }
 
-    if not _had_prior_intake(phone, messages):
+    if not _had_prior_intake(phone, messages, session_id):
         return None
     all_msgs = _merged_messages(session_messages, phone) if phone else messages
 
