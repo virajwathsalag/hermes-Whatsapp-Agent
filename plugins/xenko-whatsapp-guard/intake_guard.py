@@ -413,10 +413,22 @@ def _assistant_closed(messages: list[tuple[str, str]]) -> bool:
     return False
 
 
-def _completed_intake_in_messages(messages: list[tuple[str, str]]) -> bool:
-    """Prior full intake even if founder close line was never logged."""
+def _completed_intake_in_messages(messages: list[tuple[str, str]], include_current_session: bool = True) -> bool:
+    """Prior full intake even if founder close line was never logged.
+    
+    Args:
+        messages: The messages to check
+        include_current_session: If False, only check for completed close line (used to avoid
+            false positives when checking prior history during active intake)
+    """
     if _assistant_closed(messages):
         return True
+    
+    # If we're checking prior history, don't use the "email detected" heuristic
+    # because the current session's email will trigger false positives
+    if not include_current_session:
+        return False
+        
     user_texts = [c for r, c in messages if r == "user"]
     asst = " ".join(c.lower() for r, c in messages if r == "assistant")
     has_email = any(EMAIL_RE.search(t) for t in user_texts)
@@ -776,7 +788,8 @@ def _had_prior_intake(phone: str | None, messages: list[tuple[str, str]]) -> boo
     if not phone:
         return False
     merged = _merged_messages(None, phone)
-    if _completed_intake_in_messages(merged):
+    # Check prior history only - don't use email heuristic for current session
+    if _completed_intake_in_messages(merged, include_current_session=False):
         return True
     try:
         from gbrain_history import conversation_get
@@ -786,7 +799,8 @@ def _had_prior_intake(phone: str | None, messages: list[tuple[str, str]]) -> boo
             ("user" if r.get("role") == "user" else "assistant", str(r.get("message") or ""))
             for r in rows
         ]
-        if _completed_intake_in_messages(gbrain_msgs):
+        # Check prior GBrain history only - don't use email heuristic
+        if _completed_intake_in_messages(gbrain_msgs, include_current_session=False):
             return True
     except Exception:
         pass
@@ -1828,8 +1842,10 @@ def compute_returning_step(
         return None
     all_msgs = _merged_messages(session_messages, phone) if phone else messages
 
-    prior_complete = _completed_intake_in_messages(messages) or _completed_intake_in_messages(
-        all_msgs
+    # Only check for close line - don't use email heuristic for "prior complete"
+    # because current session's email will false-positive
+    prior_complete = _completed_intake_in_messages(messages, include_current_session=False) or _completed_intake_in_messages(
+        all_msgs, include_current_session=False
     )
     if not prior_complete:
         transcript = _session_transcript.get(sid) or []
