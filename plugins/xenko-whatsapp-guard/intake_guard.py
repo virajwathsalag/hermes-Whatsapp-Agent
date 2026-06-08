@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,7 @@ _session_below_budget: set[str] = set()
 _session_lead_type: dict[str, str] = {}  # session_id -> web | marketing | unsure | general
 _session_returning_welcomed: set[str] = set()
 _session_freshly_synced: set[str] = set()  # phones that were just saved to CRM this session
+_session_closed_at: dict[str, float] = {}  # session_id -> timestamp when intake closed
 
 RETURNING_NEW_BUSINESS_STEPS = 5  # new company: company, industry, outcome, budget, timeline — then email
 RETURNING_KNOWN_PROFILE_STEPS = 3  # outcome, budget, timeline — then email
@@ -1488,6 +1490,78 @@ def _load_crm_client():
     return mod
 
 
+def _intake_complete_save_crm(
+    session_id: str | None,
+    phone: str | None,
+    window: list[tuple[str, str]],
+    scope: list[tuple[str, str]],
+) -> None:
+    """Save lead to CRM when intake completes."""
+    sid = session_id or ""
+    if sid and sid in _session_crm_synced:
+        return
+    if not _valid_whatsapp_phone(phone):
+        return
+
+    # Get answers from window
+    answers = [msg for role, msg in window if role == "user"]
+    if len(answers) < 6:
+        return
+
+    crm = _load_crm_client()
+    if not crm:
+        return
+
+    # Extract contact info from scope messages
+    contact = {}
+    for role, msg in scope:
+        if role == "user":
+            lc = msg.lower().strip()
+            if "@" in lc and ".com" in lc:
+                contact["email"] = msg.strip()
+            elif contact.get("name"):
+                continue
+            elif len(lc.split()) <= 3 and not any(
+                w in lc for w in ["company", "sell", "business"]
+            ):
+                contact["name"] = msg.strip()
+
+    # Get name from first answer
+    name = answers[0].strip() if answers else ""
+    company = answers[1].strip() if len(answers) > 1 else ""
+
+    parsed = crm.parse_intake_answers(answers, company_hint=company)
+    if not name or name.lower() == "unknown":
+        name = parsed.get("name") or ""
+
+    if not name:
+        return
+
+    try:
+        result = crm.add_or_update_lead(
+            name=name,
+            phone=phone or "",
+            email=contact.get("email", ""),
+            company=company,
+            notes=_intake_notes_from_answers(answers, company=company, session_id=session_id),
+            source="WhatsApp",
+            lead_status="Qualified",
+            qualification_label=crm.infer_qualification_label(
+                parsed.get("budget_timeline") or "",
+                parsed.get("goal") or "",
+            ),
+            what_they_sell=parsed.get("what_they_sell") or "",
+            goal=parsed.get("goal") or "",
+            budget_timeline=parsed.get("budget_timeline") or "",
+        )
+        if sid:
+            _session_crm_synced.add(sid)
+        if phone:
+            _session_freshly_synced.add(phone)
+    except Exception:
+        pass
+
+
 def _sync_crm_on_qualification(
     session_id: str | None,
     phone: str | None,
@@ -1607,6 +1681,7 @@ def _complete_with_contact(
     if session_id:
         _session_contact[session_id] = contact
         _session_intake_closed.add(session_id)
+        _session_closed_at[session_id] = time.time()
         _session_step[session_id] = {
             **(_session_step.get(session_id) or {}),
             "_prior_contact": contact,
@@ -2026,14 +2101,21 @@ def compute_intake_step(
     messages = _merged_messages(conversation_history, phone)
     sid = session_id or ""
     if sid and sid in _session_intake_closed:
-        if SHORT_ACK_RE.match((user_message or "").strip()):
-            return {
-                "n": CLOSE_STEP,
-                "message": _close_line_for_session(session_id),
-                "in_intake": True,
-                "mode": "complete",
-            }
-        return {"n": 0, "message": "", "in_intake": False, "mode": "idle"}
+        # Check silent period: if within 60 seconds of close, stay silent
+        closed_at = _session_closed_at.get(sid, 0)
+        if closed_at and (time.time() - closed_at < 60):
+            # Within silent period - only respond to short acks
+            if SHORT_ACK_RE.match((user_message or "").strip()):
+                return {
+                    "n": CLOSE_STEP,
+                    "message": _close_line_for_session(session_id),
+                    "in_intake": True,
+                    "mode": "complete",
+                }
+            return {"n": 0, "message": "", "in_intake": False, "mode": "idle"}
+        # Silent period over - treat as returning client
+        _session_returning[sid] = "new"
+        _session_intake_closed.discard(sid)
 
     if user_message:
         last = messages[-1] if messages else None
@@ -2144,6 +2226,14 @@ def compute_intake_step(
         n = _next_intake_step_number(window, answers)
         msg = _ack_with_next_question(n - 1) if n > 1 else STEPS[n]
         return {"n": n, "message": msg, "in_intake": True, "mode": "intake"}
+
+    # Intake complete - save to CRM
+    _intake_complete_save_crm(session_id, phone, window, scope)
+
+    # Track session as closed for silent period
+    if session_id:
+        _session_intake_closed.add(session_id)
+        _session_closed_at[session_id] = time.time()
 
     return {
         "n": CLOSE_STEP,
