@@ -70,14 +70,38 @@ STEPS = {
     1: "what's your name?",
     2: "what's your business called?",
     3: "what kind of business are you in?",
-    4: "what are you hoping to achieve with the website?",
-    5: "do you have a budget in mind for the project?",
-    6: "and when would you ideally like the website completed?",
+    4: "what are you hoping to achieve?",
+    5: "do you have a budget in mind?",
+    6: "when would you ideally like to get started?",
     7: "what's the best email to reach you at?",
 }
 
-CLOSE_STEP = 7  # After step 7 (email question is step 7)
-GREETING = "hi there. thanks for reaching out. i'd be happy to help. what's your name?"
+# Single message greeting - human style, not form-like
+GREETING = "hi there. thanks for reaching out. i'd be happy to help."
+
+# Natural acknowledgments between intake questions
+ACKS = {
+    1: "nice to meet you.",  # after name
+    2: "got it.",  # after company
+    3: "nice.",  # after industry
+    4: "that makes sense.",  # after goal
+    5: "thanks for sharing that.",  # after budget
+    6: "perfect.",  # after timeline
+}
+
+
+def _ack_with_next_question(step: int) -> str:
+    """Return acknowledgment + next question for the given completed step."""
+    if step < 1 or step > 6:
+        return STEPS.get(step, "")
+    ack = ACKS.get(step, "")
+    next_step = step + 1
+    if next_step <= 7:
+        next_q = STEPS[next_step]
+        if ack:
+            return f"{ack} {next_q}"
+        return next_q
+    return ack
 
 WEB_INTAKE_RE = re.compile(
     r"\b(website|web site|web design|need a site|company website|online presence|"
@@ -502,9 +526,16 @@ def _below_budget_close_line(name: str = "") -> str:
 
 def _close_line_for_session(session_id: str | None, contact: dict[str, str] | None = None) -> str:
     sid = session_id or ""
+    # Get name from contact or session
+    name = (contact or {}).get("name") or (_session_contact.get(sid) or {}).get("name") or ""
+    first = _first_name(name) if name else ""
+    
     if sid in _session_below_budget:
-        name = (contact or {}).get("name") or (_session_contact.get(sid) or {}).get("name") or ""
-        return _below_budget_close_line(name)
+        return _below_budget_close_line(first)
+    
+    # Personalize close message with name
+    if first:
+        return f"thank you for sharing that with me, {first}. i have everything i need for now. our founder will personally review your requirements and get in touch with you shortly. we're looking forward to learning more about your business and exploring how we can help."
     return CLOSE_LINE
 
 
@@ -1772,7 +1803,7 @@ def _continue_fresh_intake_step(
             "mode": "intake",
         }
     if int(stored.get("n") or 0) == 1 and stored.get("mode") == "intake":
-        return {"n": 2, "message": STEPS[2], "in_intake": True, "mode": "intake"}
+        return {"n": 2, "message": _ack_with_next_question(1), "in_intake": True, "mode": "intake"}
     return None
 
 
@@ -2095,7 +2126,8 @@ def compute_intake_step(
 
     if not _can_complete_intake(window, answers):
         n = _next_intake_step_number(window, answers)
-        return {"n": n, "message": STEPS[n], "in_intake": True, "mode": "intake"}
+        msg = _ack_with_next_question(n - 1) if n > 1 else STEPS[n]
+        return {"n": n, "message": msg, "in_intake": True, "mode": "intake"}
 
     return {
         "n": CLOSE_STEP,
