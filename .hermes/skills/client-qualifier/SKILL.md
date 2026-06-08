@@ -130,9 +130,15 @@ OR if they want marketing:
 
 > "Got it. And when would you ideally like to get started?"
 
-### Step 8: Close
+### Step 8: Email
 
-After collecting all fields:
+After timeline:
+
+> "Got it. What's the best email to reach you at?"
+
+### Step 9: Close
+
+After email:
 
 > "Thank you for sharing that with me, [name]. Our founder will personally review your requirements and get in touch with you shortly. We're looking forward to learning more about your business and exploring how we can help."
 
