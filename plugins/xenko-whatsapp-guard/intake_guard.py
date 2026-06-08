@@ -2194,10 +2194,11 @@ def compute_intake_step(
     if (
         _greeting_complete(messages, session_id)
         and _user_re_engaged(user_message)
-        and not _step1_asked(messages)
+        and not _step1_asked_fresh(session_id, messages)
     ):
-        # Track session step
+        # Mark session as fresh intake so it doesn't check returning paths
         if session_id:
+            _session_returning[session_id] = "new"
             _session_step[session_id] = {"n": 1, "message": STEPS[1], "in_intake": True, "mode": "intake"}
         return {"n": 1, "message": STEPS[1], "in_intake": True, "mode": "intake"}
 
