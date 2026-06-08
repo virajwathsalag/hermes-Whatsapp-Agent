@@ -348,10 +348,52 @@ For below-budget web leads:
 
 ## After Close
 
-- Save lead to Airtable with all collected fields
-- Flag budget threshold if below 100k for web dev
-- Trigger internal below-budget notification if applicable
-- End conversation — do not send follow-up messages
+After sending the close message, call the CRM tool to save the lead:
+
+```
+crm_add_lead(
+  name="{name}",
+  phone="{whatsapp_number}",
+  email="{email}",
+  company="{company}",
+  what_they_sell="{industry}",
+  goal="{desired_outcome}",
+  budget_timeline="{budget} by {timeline}",
+  qualification_label="{HIGH|MEDIUM|LOW}",
+  source="WhatsApp",
+  lead_status="New"
+)
+```
+
+Then send an internal WhatsApp notification to the founder:
+
+```
+notify_qualified_lead(
+  name="{name}",
+  company="{company}",
+  industry="{industry}",
+  goal="{desired_outcome}",
+  budget="{budget}",
+  timeline="{timeline}",
+  email="{email}",
+  phone="{whatsapp_number}",
+  lead_type="{web|marketing|unsure}",
+  below_budget={true|false}
+)
+```
+
+For below-budget web leads (below 100,000 LKR), also call:
+
+```
+notify_below_budget_web(
+  name="{name}",
+  company="{company}",
+  budget_text="{budget}",
+  phone="{whatsapp_number}"
+)
+```
+
+End conversation — do not send follow-up messages.
 
 ---
 
