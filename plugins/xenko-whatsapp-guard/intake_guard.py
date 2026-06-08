@@ -42,8 +42,8 @@ _session_lead_type: dict[str, str] = {}  # session_id -> web | marketing | unsur
 _session_returning_welcomed: set[str] = set()
 _session_freshly_synced: set[str] = set()  # phones that were just saved to CRM this session
 
-RETURNING_NEW_BUSINESS_STEPS = 5  # company, industry, outcome, budget, timeline — then phone
-RETURNING_KNOWN_PROFILE_STEPS = 3  # outcome, budget, timeline — then phone
+RETURNING_NEW_BUSINESS_STEPS = 5  # new company: company, industry, outcome, budget, timeline — then email
+RETURNING_KNOWN_PROFILE_STEPS = 3  # outcome, budget, timeline — then email
 
 CLOSE_LINE = (
     "thank you for taking the time to share that with me. i have everything i need for now. "
@@ -63,19 +63,20 @@ RETURNING_STEPS_KNOWN = {
     3: "when would you ideally like to get started?",
 }
 # No email step - CRM saves without email
-# 6-step intake - name, company, goal, budget, timeline, phone
-INTAKE_ANSWERS_REQUIRED = 6  # name, company, goal, budget, timeline, phone
+# 7-step intake - name, company, industry, goal, budget, timeline, email
+INTAKE_ANSWERS_REQUIRED = 7  # name, company, industry, goal, budget, timeline, email
 
 STEPS = {
     1: "what's your name?",
-    2: "what's your company called and what do you sell?",
-    3: "what are you trying to achieve? more customers, brand awareness, or something else?",
-    4: "do you have a budget in mind for the project?",
-    5: "and when would you ideally like the website completed?",
-    6: "is this the best number to reach you on, or do you have another one?",
+    2: "what's your business called?",
+    3: "what kind of business are you in?",
+    4: "what are you hoping to achieve with the website?",
+    5: "do you have a budget in mind for the project?",
+    6: "and when would you ideally like the website completed?",
+    7: "what's the best email to reach you at?",
 }
 
-# Single message greeting - NO multi-part, NO marketing pitch in greeting
+CLOSE_STEP = 7  # After step 7 (email question is step 7)
 GREETING = "hi there. thanks for reaching out. i'd be happy to help. what's your name?"
 
 WEB_INTAKE_RE = re.compile(
