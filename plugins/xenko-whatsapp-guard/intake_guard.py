@@ -43,7 +43,7 @@ _session_returning_welcomed: set[str] = set()
 _session_freshly_synced: set[str] = set()  # phones that were just saved to CRM this session
 
 RETURNING_NEW_BUSINESS_STEPS = 5  # new company: company, industry, outcome, budget, timeline
-RETURNING_KNOWN_PROFILE_STEPS = 3  # same business: outcome, budget, timeline — then email
+RETURNING_KNOWN_PROFILE_STEPS = 3  # same business: outcome, budget, timeline — then close (no email)
 
 CLOSE_LINE = (
     "thank you for taking the time to share that with me. i have everything i need for now. "
@@ -51,7 +51,7 @@ CLOSE_LINE = (
     "we're looking forward to learning more about your business and exploring how we can help."
 )
 CLOSE_LINE_LEGACY = "our founder will be in touch"
-CLOSE_STEP = 8
+CLOSE_STEP = 7  # After step 6 (no email step anymore)
 RETURNING_QUESTION = (
     "great to hear from you again. are you reaching out about your existing project, "
     "or is this something new you'd like help with?"
@@ -62,7 +62,8 @@ RETURNING_STEPS_KNOWN = {
     2: "do you already have a budget in mind?",
     3: "when would you ideally like to get started?",
 }
-INTAKE_ANSWERS_REQUIRED = 7  # name, company, industry, outcome, budget, timeline, email
+# No email step - CRM saves without email
+INTAKE_ANSWERS_REQUIRED = 6  # name, company, industry, outcome, budget, timeline
 WEB_MIN_BUDGET_LKR = 100_000
 
 STEPS = {
@@ -72,7 +73,6 @@ STEPS = {
     4: "what are you hoping to achieve?",
     5: "do you already have a budget in mind?",
     6: "when would you ideally like to get started?",
-    7: "what's the best email to reach you on?",
 }
 
 # Single message greeting - NO multi-part, NO marketing pitch in greeting
@@ -1474,8 +1474,7 @@ def _sync_crm_on_qualification(
     company = (contact.get("company") or parsed.get("company") or "").strip()
     if not name or name.lower() == "unknown":
         return None
-    if not email:
-        return None
+    # Allow CRM sync WITHOUT email - save lead with name + company info
 
     try:
         result = crm.add_or_update_lead(
@@ -1524,9 +1523,8 @@ def _intake_notes_from_answers(
         "Outcome",
         "Budget",
         "Timeline",
-        "Email",
     )
-    for i, ans in enumerate(answers[:7]):
+    for i, ans in enumerate(answers[:6]):
         label = labels[i] if i < len(labels) else f"Answer {i + 1}"
         if EMAIL_RE.search(ans) and i < 6:
             continue
@@ -1657,8 +1655,7 @@ def _returning_new_contact_step(
 def _can_complete_intake(window: list[tuple[str, str]], answers: list[str]) -> bool:
     if len(answers) < INTAKE_ANSWERS_REQUIRED:
         return False
-    if not any(EMAIL_RE.search(a) for a in answers):
-        return False
+    # No email required anymore
     intake_markers = (
         "your name",
         "company called",
@@ -1666,7 +1663,7 @@ def _can_complete_intake(window: list[tuple[str, str]], answers: list[str]) -> b
         "kind of business",
         "hoping to achieve",
         "budget",
-        "email to reach",
+        "get started",
         "best email",
     )
     assistant_text = " ".join(c.lower() for r, c in window if r == "assistant")
