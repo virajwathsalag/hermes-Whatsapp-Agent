@@ -167,9 +167,48 @@ def _find_lead_by_phone(phone: str) -> dict[str, Any] | None:
     return _find_by_phone("LEADS", phone)
 
 
+# In-memory cache of leads created in the last 10 minutes (phone -> timestamp)
+# Prevents false "returning" detection when new lead completes intake in same session
+_RECENTLY_CREATED: dict[str, float] = {}
+_RECENT_LEAD_TTL_SECONDS = 600  # 10 minutes
+
+
+def _cleanup_old_recent_leads() -> None:
+    """Remove leads older than TTL from cache."""
+    import time
+
+    now = time.time()
+    expired = [p for p, ts in _RECENTLY_CREATED.items() if now - ts > _RECENT_LEAD_TTL_SECONDS]
+    for p in expired:
+        _RECENTLY_CREATED.pop(p, None)
+
+
+def mark_lead_created(phone: str) -> None:
+    """Mark a lead as freshly created (skip returning check for next few mins)."""
+    import time
+
+    _cleanup_old_recent_leads()
+    _RECENTLY_CREATED[normalize_phone(phone)] = time.time()
+
+
 def lead_exists_for_phone(phone: str) -> bool:
-    """True if this WhatsApp number already has a row in Leads (returning contact)."""
+    """True if this WhatsApp number already has a row in Leads (returning contact).
+    
+    Excludes leads created in the last 10 minutes to avoid false positives
+    when a new lead completes intake and sends another message in the same session.
+    """
     try:
+        # First check: is this a freshly created lead?
+        normalized = normalize_phone(phone)
+        if normalized in _RECENTLY_CREATED:
+            import time
+
+            if time.time() - _RECENTLY_CREATED[normalized] < _RECENT_LEAD_TTL_SECONDS:
+                return False  # Treat as new, not returning
+            else:
+                _RECENTLY_CREATED.pop(normalized, None)  # Expired, allow normal check
+
+        # Normal check: does a lead already exist in CRM?
         return _find_lead_by_phone(phone) is not None
     except Exception:
         return False
@@ -604,6 +643,7 @@ def add_or_update_lead(
                 lead_fields.pop(key, None)
             lead_id = _create_record("LEADS", lead_fields)
         action = "created"
+        mark_lead_created(phone_norm)  # Mark as fresh so returning check doesn't fire in same session
 
     opportunity_id = None
     if company:
