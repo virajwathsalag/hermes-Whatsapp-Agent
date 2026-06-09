@@ -41,6 +41,7 @@ _session_below_budget: set[str] = set()
 _session_lead_type: dict[str, str] = {}  # session_id -> web | marketing | unsure | general
 _session_returning_welcomed: set[str] = set()
 _session_freshly_synced: set[str] = set()  # phones that were just saved to CRM this session
+_phones_in_active_intake: set[str] = set()  # E.164 digit keys — mid-flow, block returning hijack
 
 RETURNING_NEW_BUSINESS_STEPS = 5  # new company: company, industry, outcome, budget, timeline
 RETURNING_KNOWN_PROFILE_STEPS = 3  # same business: outcome, budget, timeline — then contact number
@@ -798,6 +799,9 @@ def _crm_lead_exists(phone: str) -> bool:
 
 
 def _had_prior_intake(phone: str | None, messages: list[tuple[str, str]]) -> bool:
+    # Mid-flow intake on this number must never be treated as a returning lead.
+    if phone and _phone_in_active_intake(phone):
+        return False
     # Don't treat as prior intake if this phone was just synced to CRM in this session
     if phone and phone in _session_freshly_synced:
         return False
@@ -1059,6 +1063,126 @@ def _accumulate_session_transcript(
     return transcript
 
 
+def _phone_in_active_intake(phone: str | None) -> bool:
+    keys = _phone_keys(phone)
+    return bool(keys and keys & _phones_in_active_intake)
+
+
+def _mark_intake_active(phone: str | None, session_id: str | None = None) -> None:
+    for key in _phone_keys(phone):
+        _phones_in_active_intake.add(key)
+
+
+def _clear_intake_active(phone: str | None, session_id: str | None = None) -> None:
+    for key in _phone_keys(phone):
+        _phones_in_active_intake.discard(key)
+
+
+def _persistent_conversation(phone: str | None, limit: int = 60) -> list[tuple[str, str]]:
+    """Best available history from GBrain jsonl, state.db, or postgres (survives redeploy/sync)."""
+    if not phone:
+        return []
+    chunks: list[list[tuple[str, str]]] = []
+    gb = _gbrain_messages(phone, limit)
+    if gb:
+        chunks.append(gb)
+    jl = [
+        (str(r.get("role") or "user"), str(r.get("message") or ""))
+        for r in _conversation_from_jsonl(phone, limit)
+    ]
+    if jl:
+        chunks.append(jl)
+    st = [
+        (str(r.get("role") or "user"), str(r.get("message") or ""))
+        for r in _conversation_from_state_db(phone, limit)
+    ]
+    if st:
+        chunks.append(st)
+    pg = [
+        (str(r.get("role") or "user"), str(r.get("message") or ""))
+        for r in _conversation_from_postgres(phone, limit)
+    ]
+    if pg:
+        chunks.append(pg)
+    if not chunks:
+        return []
+    return max(chunks, key=len)
+
+
+def _intake_block_start(messages: list[tuple[str, str]]) -> int:
+    """Index of the first name question in the current intake block."""
+    start = 0
+    for i, (role, content) in enumerate(messages):
+        if role == "assistant" and _assistant_closed([(role, content)]):
+            start = i + 1
+    for i in range(start, len(messages)):
+        role, content = messages[i]
+        if role == "user" and NEW_LEAD_RE.search(content):
+            start = i
+    for i in range(start, len(messages)):
+        role, content = messages[i]
+        if role != "assistant":
+            continue
+        low = content.lower()
+        if "before we get started" in low or (
+            "what's your name" in low
+            or ("your name" in low and "business" not in low and "company" not in low)
+        ):
+            return i
+    for i in range(start, len(messages)):
+        role, content = messages[i]
+        if role == "assistant" and _intake_started_marker(content):
+            return i
+    return start
+
+
+def _current_intake_segment(messages: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Messages for the intake currently in progress (after last close / new-company marker)."""
+    if not messages:
+        return []
+    start = _intake_block_start(messages)
+    segment = messages[start:]
+    if not segment or _closed_in_window(segment):
+        return []
+    return segment
+
+
+def _backfill_session_transcript(session_id: str | None, phone: str | None) -> None:
+    """
+    Gateway often sends one turn; GBrain/state.db may have the full thread after sync.
+    Merge persistent history so mid-intake detection survives sparse in-memory transcripts.
+    """
+    sid = session_id or ""
+    if not sid or not phone:
+        return
+    transcript = list(_session_transcript.get(sid) or [])
+    segment = _current_intake_segment(_persistent_conversation(phone))
+    if not segment:
+        return
+    if len(segment) >= len(transcript):
+        merged = list(segment)
+        for msg in transcript:
+            if msg not in merged:
+                merged.append(msg)
+        _session_transcript[sid] = merged
+
+
+def _segment_has_active_intake(
+    segment: list[tuple[str, str]],
+    session_id: str | None = None,
+) -> bool:
+    if not segment or _closed_in_window(segment):
+        return False
+    answers = _user_answers(segment)
+    if not answers:
+        return False
+    if len(answers) < INTAKE_ANSWERS_REQUIRED:
+        return True
+    if not _phone_step_asked(segment, session_id):
+        return True
+    return False
+
+
 def _conversation_scope(
     session_id: str | None,
     messages: list[tuple[str, str]],
@@ -1151,6 +1275,92 @@ def _in_active_intake(window: list[tuple[str, str]], messages: list[tuple[str, s
 
 def _closed_in_window(window: list[tuple[str, str]]) -> bool:
     return _assistant_closed(window)
+
+
+def _session_has_active_intake(
+    session_id: str | None,
+    session_messages: list[tuple[str, str]],
+    phone: str | None = None,
+) -> bool:
+    """
+    True when this WhatsApp session already has intake in progress.
+    Must block returning-customer flow even if GBrain/CRM shows an older completed lead.
+    """
+    sid = session_id or ""
+    if sid in _session_intake_closed:
+        return False
+
+    if phone and _phone_in_active_intake(phone):
+        return True
+
+    if phone:
+        _backfill_session_transcript(sid, phone)
+        segment = _current_intake_segment(_persistent_conversation(phone))
+        if _segment_has_active_intake(segment, sid):
+            _mark_intake_active(phone, sid)
+            return True
+
+    stored = _session_step.get(sid) or {}
+    if stored.get("in_intake") and stored.get("mode") in ("intake", "returning_intake"):
+        n = int(stored.get("n") or 0)
+        if 1 <= n < CLOSE_STEP:
+            if phone:
+                _mark_intake_active(phone, sid)
+            return True
+
+    transcript = _session_transcript.get(sid) or session_messages
+    if not transcript:
+        return False
+
+    window = _active_intake_window(session_id, transcript)
+    scope = _conversation_scope(session_id, transcript)
+    if not window or _closed_in_window(window):
+        return False
+
+    answers = _user_answers(window)
+    if answers and (
+        len(answers) < INTAKE_ANSWERS_REQUIRED
+        or not _phone_step_asked(transcript, session_id)
+    ):
+        if phone:
+            _mark_intake_active(phone, sid)
+        return True
+
+    if _step1_asked(transcript) and _in_active_intake(window, scope):
+        if phone:
+            _mark_intake_active(phone, sid)
+        return True
+
+    return False
+
+
+def _track_intake_step_state(
+    session_id: str | None,
+    phone: str | None,
+    step: dict[str, Any],
+) -> None:
+    """Remember phones mid-intake so GBrain/CRM cannot hijack the flow after sync."""
+    if step.get("mode") == "complete" or int(step.get("n") or 0) >= CLOSE_STEP:
+        _clear_intake_active(phone, session_id)
+        return
+    if not step.get("in_intake"):
+        return
+    mode = step.get("mode")
+    n = int(step.get("n") or 0)
+    if mode in ("intake", "returning_intake", "email_ask") and 1 <= n < CLOSE_STEP:
+        _mark_intake_active(phone, session_id)
+
+
+def _safe_returning_step(
+    session_id: str | None,
+    session_messages: list | None,
+    user_message: str,
+    phone: str | None,
+) -> dict[str, Any] | None:
+    msgs = _normalize_messages(session_messages)
+    if _session_has_active_intake(session_id, msgs, phone):
+        return None
+    return compute_returning_step(session_id, session_messages, user_message, phone)
 
 
 def _returning_question_asked(messages: list[tuple[str, str]]) -> bool:
@@ -1592,6 +1802,7 @@ def _complete_with_contact(
     if session_id:
         _session_contact[session_id] = contact
         _session_intake_closed.add(session_id)
+        _clear_intake_active(phone, session_id)
         _session_step[session_id] = {
             **(_session_step.get(session_id) or {}),
             "_prior_contact": contact,
@@ -1836,10 +2047,18 @@ def compute_returning_step(
 
     if not _had_prior_intake(phone, messages):
         return None
+
+    if phone and _phone_in_active_intake(phone):
+        return None
+
+    # Never hijack a fresh intake mid-flow (common when GBrain/CRM has an old completed lead).
+    if _session_has_active_intake(session_id, messages, phone):
+        return None
+
     all_msgs = _merged_messages(session_messages, phone) if phone else messages
 
-    # Only check for close line - don't use email heuristic for "prior complete"
-    # because current session's email will false-positive
+    # Only check for close line - don't use phone-step heuristic for "prior complete"
+    # because the current session's answers will false-positive
     prior_complete = _completed_intake_in_messages(messages, include_current_session=False) or _completed_intake_in_messages(
         all_msgs, include_current_session=False
     )
@@ -1965,7 +2184,11 @@ def compute_intake_step(
     session_messages = _accumulate_session_transcript(
         session_id, conversation_history, user_message
     )
+    _backfill_session_transcript(session_id, phone)
+    session_messages = _session_transcript.get(session_id or "") or session_messages
     messages = _merged_messages(conversation_history, phone)
+    # Prefer backfilled in-session thread for step logic (gateway often sends one turn only).
+    intake_thread = session_messages if len(session_messages) >= 2 else messages
     sid = session_id or ""
     if sid and sid in _session_intake_closed:
         if SHORT_ACK_RE.match((user_message or "").strip()):
@@ -1986,9 +2209,11 @@ def compute_intake_step(
     if boundary:
         return boundary
 
-    returning = compute_returning_step(session_id, session_messages, user_message, phone)
-    if returning:
-        return returning
+    if not _session_has_active_intake(session_id, session_messages, phone):
+        returning = compute_returning_step(session_id, session_messages, user_message, phone)
+        if returning:
+            _track_intake_step_state(session_id, phone, returning)
+            return returning
 
     sid = session_id or ""
     if (
@@ -2018,9 +2243,9 @@ def compute_intake_step(
         if NEW_LEAD_RE.search(user_message) and session_id:
             _session_returning[session_id] = "new"
         if STRONG_INTAKE_RE.search(user_message) or DIRECT_INTAKE_RE.search(user_message):
-            window = _intake_window(messages)
+            window = _intake_window(intake_thread)
             if _closed_in_window(window):
-                alt = compute_returning_step(session_id, session_messages, user_message, phone)
+                alt = _safe_returning_step(session_id, session_messages, user_message, phone)
                 if alt:
                     return alt
         return {"n": 1, "message": STEPS[1], "in_intake": True, "mode": "intake"}
@@ -2033,21 +2258,21 @@ def compute_intake_step(
         return {"n": 0, "message": "", "in_intake": False, "mode": "idle"}
 
     if (
-        _greeting_complete(messages, session_id)
+        _greeting_complete(intake_thread, session_id)
         and _user_re_engaged(user_message)
-        and not _step1_asked(messages)
+        and not _step1_asked(intake_thread)
     ):
         return {"n": 1, "message": STEPS[1], "in_intake": True, "mode": "intake"}
 
-    window = _active_intake_window(session_id, messages)
-    if not _in_active_intake(window, messages):
+    window = _active_intake_window(session_id, intake_thread)
+    if not _in_active_intake(window, intake_thread):
         if _user_re_engaged(user_message):
             alt_fresh = _continue_fresh_intake_step(
                 session_id, session_messages, messages, user_message, phone
             )
             if alt_fresh:
                 return alt_fresh
-            alt_returning = compute_returning_step(session_id, session_messages, user_message, phone)
+            alt_returning = _safe_returning_step(session_id, session_messages, user_message, phone)
             if alt_returning:
                 return alt_returning
             if (
@@ -2076,14 +2301,16 @@ def compute_intake_step(
 
     if not _can_complete_intake(window, answers):
         n = _next_intake_step_number(window, answers)
-        return {"n": n, "message": STEPS[n], "in_intake": True, "mode": "intake"}
+        step_out = {"n": n, "message": STEPS[n], "in_intake": True, "mode": "intake"}
+        _track_intake_step_state(session_id, phone, step_out)
+        return step_out
 
     resolved = _resolve_contact_phone(
         answers[-1] if answers else (user_message or ""),
         phone,
     )
     contact_name = answers[0] if answers else None
-    return _complete_with_contact(
+    result = _complete_with_contact(
         session_id,
         phone,
         messages,
@@ -2092,6 +2319,8 @@ def compute_intake_step(
         preferred_phone=resolved,
         name=contact_name,
     )
+    _track_intake_step_state(session_id, phone, result)
+    return result
 
 
 def _track_lead_type_and_budget(
@@ -2184,11 +2413,7 @@ def guard_response(text: str, step: dict[str, Any]) -> str:
         if n >= CLOSE_STEP:
             out = step.get("message") or CLOSE_LINE
         elif 1 <= n <= 7:
-            sanitized = sanitize_whatsapp_text(text)
-            if sanitized and len(sanitized) >= 12 and "?" in sanitized:
-                out = sanitized
-            else:
-                out = STEPS[n]
+            out = step.get("message") or STEPS[n]
         else:
             out = sanitize_whatsapp_text(text)
     out = sanitize_whatsapp_text(out)
@@ -2213,6 +2438,7 @@ def pre_llm_intake_context(
         phone=phone,
         session_id=session_id,
     )
+    _track_intake_step_state(session_id, phone, step)
     if session_id:
         _session_step[session_id] = {
             **step,
@@ -2391,6 +2617,7 @@ def transform_whatsapp_output(
         phone=phone,
         session_id=session_id,
     )
+    _track_intake_step_state(session_id, phone, step)
     if session_id:
         _session_step[session_id] = {
             **step,
@@ -2461,7 +2688,7 @@ def transform_whatsapp_output(
         msgs = _messages_from_history(history)
         if user_msg:
             msgs.append(("user", user_msg))
-        returning = compute_returning_step(session_id, msgs, user_msg, phone)
+        returning = _safe_returning_step(session_id, msgs, user_msg, phone)
         if returning and returning.get("mode") in ("returning_ask", "returning_same"):
             return guard_response(response_text or "", returning)
 

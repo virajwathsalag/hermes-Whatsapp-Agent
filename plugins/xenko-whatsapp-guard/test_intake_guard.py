@@ -8,8 +8,10 @@ from intake_guard import (
     RETURNING_QUESTION,
     STEPS,
     _guard_applies,
+    _phones_in_active_intake,
     _session_returning,
     _session_step,
+    _session_transcript,
     compute_intake_step,
     compute_returning_step,
     guard_response,
@@ -17,6 +19,10 @@ from intake_guard import (
     sanitize_whatsapp_text,
     _welcome_message_text,
 )
+
+_phones_in_active_intake.clear()
+_session_transcript.clear()
+_session_step.clear()
 
 assert _guard_applies(session_id="s1", platform="whatsapp")
 assert _guard_applies(session_id="s1", platform="whatsapp", sender_id="236373558739146@lid")
@@ -41,7 +47,9 @@ ret = compute_intake_step(prior, "hello", session_id="s-old")
 assert ret["mode"] in ("returning_ask", "returning_welcome"), ret
 assert "again" in ret["message"].lower() or "welcome back" in ret["message"].lower()
 
-with patch("intake_guard._crm_lead_exists", return_value=True):
+with patch("intake_guard._crm_lead_exists", return_value=True), patch(
+    "intake_guard._persistent_conversation", return_value=[]
+):
     ret_crm = compute_intake_step([], "Hello", session_id="s-crm", phone="94760193094")
     assert ret_crm["mode"] in ("returning_ask", "returning_welcome"), ret_crm
 
@@ -269,5 +277,71 @@ _session_step["s-crm"] = {"in_intake": True, "mode": "complete", "n": CLOSE_STEP
 assert pre_tool_block_during_intake(
     tool_name="crm_add_lead", session_id="s-crm", sender_id="94778298087@c.us"
 ) is None
+
+# Mid-intake must NOT switch to returning welcome when GBrain/CRM has old completed lead
+from intake_guard import _session_transcript as _st
+
+viraj_hist = [
+    {"role": "assistant", "content": STEPS[1]},
+    {"role": "user", "content": "Viraj"},
+    {"role": "assistant", "content": STEPS[2]},
+    {"role": "user", "content": "Gjjjs"},
+    {"role": "assistant", "content": STEPS[3]},
+    {"role": "user", "content": "In coconut business"},
+    {"role": "assistant", "content": STEPS[4]},
+    {"role": "user", "content": "A website for sure"},
+    {"role": "assistant", "content": "are you mainly looking to generate leads, build trust with customers, or sell products online?"},
+    {"role": "user", "content": "More customers"},
+    {"role": "assistant", "content": STEPS[5]},
+    {"role": "user", "content": "Around 120000"},
+    {"role": "assistant", "content": STEPS[6]},
+    {"role": "user", "content": "Around august"},
+]
+_st["s-viraj"] = [
+    (r["role"], r["content"]) for r in viraj_hist
+]
+with patch("intake_guard._had_prior_intake", return_value=True), patch(
+    "intake_guard._crm_lead_exists", return_value=True
+):
+    mid = compute_intake_step(
+        viraj_hist,
+        "Around august",
+        session_id="s-viraj",
+        phone="94778298087",
+    )
+assert mid["mode"] == "intake", mid
+assert mid["n"] == 7, mid
+assert "best number to reach you" in mid.get("message", "")
+
+# Sparse in-memory transcript + GBrain has full thread + CRM prior → still step 7
+from intake_guard import _session_transcript as _st2
+
+_gbrain_thread = [
+    ("assistant", CLOSE_LINE),  # old completed test
+    ("assistant", STEPS[1]),
+    ("user", "Viraj"),
+    ("assistant", STEPS[2]),
+    ("user", "Gjjjs"),
+    ("assistant", STEPS[3]),
+    ("user", "coconut business"),
+    ("assistant", STEPS[4]),
+    ("user", "website"),
+    ("assistant", STEPS[5]),
+    ("user", "120000"),
+    ("assistant", STEPS[6]),
+    ("user", "august"),
+]
+_st2["s-gbrain"] = []  # simulate redeploy / lost in-memory state
+with patch("intake_guard._had_prior_intake", return_value=True), patch(
+    "intake_guard._crm_lead_exists", return_value=True
+), patch("intake_guard._persistent_conversation", return_value=_gbrain_thread):
+    gbrain_step = compute_intake_step(
+        [{"role": "user", "content": "august"}],
+        "august",
+        session_id="s-gbrain",
+        phone="94778298087",
+    )
+assert gbrain_step["mode"] == "intake", gbrain_step
+assert gbrain_step["n"] == 7, gbrain_step
 
 print("ok")
