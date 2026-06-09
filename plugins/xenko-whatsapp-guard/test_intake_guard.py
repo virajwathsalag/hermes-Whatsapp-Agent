@@ -13,6 +13,7 @@ from intake_guard import (
     _phones_in_active_intake,
     _session_intake_closed,
     _session_returning,
+    _history_dicts_from_transcript,
     _session_step,
     _session_transcript,
     _user_answers,
@@ -137,7 +138,7 @@ assert "welcome" not in (step_run.get("message") or "").lower()
 _session_returning["s-stored"] = "new"
 _session_step["s-stored"] = {"mode": "intake", "n": 1, "in_intake": True}
 step_stored = compute_intake_step([], "we sell tires", session_id="s-stored")
-assert step_stored["n"] == 2, step_stored
+assert step_stored["n"] == 1, step_stored
 
 # Gateway sends one turn only; in-memory transcript must advance past step 2
 from intake_guard import (
@@ -415,5 +416,25 @@ with patch("intake_guard._had_prior_intake", return_value=True), patch(
     )
 assert post_close["mode"] in ("returning_ask", "returning_welcome", "returning_followup"), post_close
 _session_intake_closed.discard("s-post-close")
+
+# "Hello ned some help" must NOT jump to business name (step 2)
+_session_transcript.clear()
+_session_step.clear()
+_viraj_msg = "Hello ned some help"
+viraj_step = compute_intake_step([], _viraj_msg, session_id="s-viraj", phone="94771234567")
+assert viraj_step["mode"] in ("greeting_burst", "intake"), viraj_step
+assert viraj_step.get("n") in (0, 1), viraj_step
+assert STEPS[2] not in (viraj_step.get("message") or ""), viraj_step
+from intake_guard import _record_assistant_in_transcript, GREETING
+
+_record_assistant_in_transcript("s-viraj", GREETING)
+viraj_recompute = compute_intake_step(
+    _history_dicts_from_transcript("s-viraj"),
+    _viraj_msg,
+    session_id="s-viraj",
+    phone="94771234567",
+)
+assert viraj_recompute.get("n") == 1, viraj_recompute
+assert STEPS[2] not in (viraj_recompute.get("message") or ""), viraj_recompute
 
 print("ok")

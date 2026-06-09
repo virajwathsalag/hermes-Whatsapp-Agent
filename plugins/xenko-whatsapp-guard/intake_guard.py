@@ -147,6 +147,11 @@ GREETING_IN_MESSAGE_RE = re.compile(
     re.I,
 )
 
+HELP_SEEKING_RE = re.compile(
+    r"\b(?:need|want|looking\s+for|ned)\b(?:\s+\w+){0,4}\s+\b(?:help|support|assistance)\b",
+    re.I,
+)
+
 ABUSE_RE = re.compile(
     r"\b(ignore (?:all )?(?:your )?instructions|system prompt|jailbreak|"
     r"dan mode|pretend you(?:'re| are)|act as (?:if|a)|bypass(?: your)? rules|"
@@ -402,6 +407,8 @@ def _conversation_from_postgres(phone: str | None, limit: int = 50) -> list[dict
 
 
 def _intake_started_marker(text: str) -> bool:
+    if _is_welcome_greeting_message(text):
+        return False
     low = (text or "").lower()
     return (
         "your name" in low
@@ -904,15 +911,24 @@ def _welcome_message_text() -> str:
 
 
 def _greeting_burst_sent(messages: list[tuple[str, str]], session_id: str | None) -> bool:
-    if session_id and session_id in _session_greeting_burst:
-        return True
     welcome = _welcome_message_text()
     needle = GREETING[:20].lower()
-    return any(
+    in_messages = any(
         role == "assistant"
         and (needle in content.lower() or welcome.lower() in content.lower())
         for role, content in messages
     )
+    if in_messages:
+        return True
+    # Session flag is only valid when the welcome line is actually in the transcript.
+    if session_id and session_id in _session_greeting_burst:
+        transcript = _session_transcript.get(session_id or "", [])
+        return any(
+            role == "assistant"
+            and (needle in content.lower() or welcome.lower() in content.lower())
+            for role, content in transcript
+        )
+    return False
 
 
 def _greeting_complete(messages: list[tuple[str, str]], session_id: str | None = None) -> bool:
@@ -947,17 +963,20 @@ def _next_greeting_step(messages: list[tuple[str, str]]) -> int:
 
 
 def _should_skip_greeting(user_message: str) -> bool:
-    """Direct marketing ask on first contact — no 3-part welcome."""
-    if STRONG_INTAKE_RE.search(user_message):
+    """Direct marketing or help ask on first contact — no welcome-only preamble."""
+    text = (user_message or "").strip()
+    if STRONG_INTAKE_RE.search(text):
         return True
-    if NEW_LEAD_RE.search(user_message):
+    if NEW_LEAD_RE.search(text):
         return True
-    if DIRECT_INTAKE_RE.search(user_message) and not GREETING_ONLY_RE.match(user_message.strip()):
-        if STRONG_INTAKE_RE.search(user_message):
+    if HELP_SEEKING_RE.search(text):
+        return True
+    if DIRECT_INTAKE_RE.search(text) and not GREETING_ONLY_RE.match(text):
+        if STRONG_INTAKE_RE.search(text):
             return True
         if re.search(
             r"\b(help|need|want|looking)\b.*\b(marketing|ads?|customers|sales)\b",
-            user_message,
+            text,
             re.I,
         ):
             return True
@@ -979,7 +998,35 @@ def _classify_user_message(user_message: str) -> str:
     return "general"
 
 
+def _is_welcome_greeting_message(content: str) -> bool:
+    """Combined welcome + name line — not a separate intake step for field pairing."""
+    low = (content or "").strip().lower()
+    if not low:
+        return False
+    welcome = _welcome_message_text().strip().lower()
+    if low == welcome:
+        return True
+    return low.startswith("hi there. thanks for reaching out") and "what's your name" in low
+
+
+def _is_valid_name_answer(text: str) -> bool:
+    t = (text or "").strip()
+    if not t or _is_noise_answer(t):
+        return False
+    if HELP_SEEKING_RE.search(t):
+        return False
+    if GREETING_IN_MESSAGE_RE.search(t) and re.search(
+        r"\b(need|want|help|website|marketing|customer|business|grow|sell)\b",
+        t,
+        re.I,
+    ):
+        return False
+    return True
+
+
 def _is_name_step_question(content: str) -> bool:
+    if _is_welcome_greeting_message(content):
+        return False
     low = (content or "").lower()
     if "name of your business" in low or "business called" in low:
         return False
@@ -991,6 +1038,8 @@ def _is_name_step_question(content: str) -> bool:
 
 
 def _detect_intake_step_key(content: str) -> str | None:
+    if _is_welcome_greeting_message(content):
+        return None
     low = (content or "").lower()
     if _is_name_step_question(content):
         return "name"
@@ -1018,6 +1067,8 @@ def _is_noise_answer(text: str) -> bool:
     if not text or SLASH_CMD_RE.match(text) or INJECTED_CTX_RE.search(text):
         return True
     if GREETING_ONLY_RE.match(text.strip()):
+        return True
+    if HELP_SEEKING_RE.search(text):
         return True
     if NEW_LEAD_RE.search(text) or SAME_PROJECT_RE.search(text):
         return True
@@ -1049,6 +1100,9 @@ def _extract_intake_fields_from_window(
             continue
         if pending == "contact":
             fields["contact"] = _resolve_contact_phone(text, phone)
+        elif pending == "name":
+            if _is_valid_name_answer(text):
+                fields["name"] = text[:200]
         else:
             fields[pending] = text[:200]
         pending = None
@@ -2085,7 +2139,10 @@ def _continue_fresh_intake_step(
             name=contact_name or None,
         )
     if int(stored.get("n") or 0) == 1 and stored.get("mode") == "intake":
-        return {"n": 2, "message": STEPS[2], "in_intake": True, "mode": "intake"}
+        window = _active_intake_window(session_id, session_messages)
+        answers = _user_answers(window, phone)
+        n = _next_intake_step_number(window, answers, phone)
+        return {"n": n, "message": STEPS[n], "in_intake": True, "mode": "intake"}
     return None
 
 
@@ -2742,12 +2799,22 @@ def transform_whatsapp_output(
     phone = stored.get("_phone") or _resolve_phone(session_id, **kwargs)
     history = stored.get("_conversation_history") or kwargs.get("conversation_history")
     hist_for_step = _history_dicts_from_transcript(session_id) or history
-    step = compute_intake_step(
-        hist_for_step,
-        user_msg,
-        phone=phone,
-        session_id=session_id,
-    )
+    transcript = _session_transcript.get(session_id or "", [])
+    has_outbound = any(role == "assistant" for role, _ in transcript)
+    if (
+        stored.get("_user_message") == user_msg
+        and stored.get("mode") == "greeting_burst"
+        and not has_outbound
+        and user_msg
+    ):
+        step = {k: v for k, v in stored.items() if not str(k).startswith("_")}
+    else:
+        step = compute_intake_step(
+            hist_for_step,
+            user_msg,
+            phone=phone,
+            session_id=session_id,
+        )
     _track_intake_step_state(session_id, phone, step)
     if session_id:
         _session_step[session_id] = {
