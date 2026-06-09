@@ -11,6 +11,8 @@ from intake_guard import (
     _guard_applies,
     _next_intake_step_number,
     _phones_in_active_intake,
+    _session_fields,
+    _phone_intake_fields,
     _session_intake_closed,
     _session_returning,
     _history_dicts_from_transcript,
@@ -20,6 +22,8 @@ from intake_guard import (
     compute_intake_step,
     compute_returning_step,
     guard_response,
+    pre_llm_intake_context,
+    transform_whatsapp_output,
     pre_tool_block_during_intake,
     sanitize_whatsapp_text,
     _welcome_message_text,
@@ -28,6 +32,12 @@ from intake_guard import (
 _phones_in_active_intake.clear()
 _session_transcript.clear()
 _session_step.clear()
+_session_fields.clear()
+_phone_intake_fields.clear()
+
+# Isolate tests from local GBrain/state.db history on dev machines
+_persist_empty = patch("intake_guard._persistent_conversation", return_value=[])
+_persist_empty.start()
 
 assert _guard_applies(session_id="s1", platform="whatsapp")
 assert _guard_applies(session_id="s1", platform="whatsapp", sender_id="236373558739146@lid")
@@ -199,7 +209,7 @@ fillers_hist = [
 with patch("intake_guard._had_prior_intake", return_value=True), patch(
     "intake_guard._prior_contact",
     return_value={"name": "Hasangee", "phone": "94778298087"},
-):
+), patch("intake_guard._persistent_conversation", return_value=[]):
     after_budget = compute_intake_step(
         fillers_hist,
         "7 months",
@@ -436,5 +446,71 @@ viraj_recompute = compute_intake_step(
 )
 assert viraj_recompute.get("n") == 1, viraj_recompute
 assert STEPS[2] not in (viraj_recompute.get("message") or ""), viraj_recompute
+
+# Lalith timeline loop: polluted GBrain must not steal "Around august" as name
+from unittest.mock import patch
+
+_lalith_polluted = [
+    ("user", "Hello need some help"),
+    ("assistant", STEPS[1]),
+    ("user", "Iraj"),
+    ("assistant", STEPS[2]),
+    ("user", "Gucci"),
+    ("assistant", STEPS[3]),
+    ("user", "We sell bags and stuff"),
+    ("assistant", STEPS[4]),
+    ("user", "More customers obviously"),
+    ("assistant", STEPS[5]),
+    ("user", "100000"),
+    ("assistant", STEPS[6]),
+    ("assistant", STEPS[1]),  # orphan duplicate from old GBrain
+]
+_session_transcript["s-lalith"] = list(_lalith_polluted)
+_session_step["s-lalith"] = {"n": 6, "mode": "intake", "in_intake": True}
+with patch("intake_guard._persistent_conversation", return_value=_lalith_polluted):
+    lalith_timeline = compute_intake_step(
+        [{"role": "user", "content": "Around august"}],
+        "Around august",
+        session_id="s-lalith",
+        phone="94766767565",
+    )
+assert lalith_timeline["n"] == 7, lalith_timeline
+assert STEPS[6] not in (lalith_timeline.get("message") or ""), lalith_timeline
+assert _session_fields.get("s-lalith", {}).get("timeline") == "Around august"
+
+# Full Lalith path through sparse gateway must not loop on timeline
+_session_transcript.clear()
+_session_step.clear()
+_session_fields.clear()
+_phone_intake_fields.clear()
+_sid = "s-lalith-full"
+_phone = "94766767565"
+_lalith_turns = [
+    "Hello need some help",
+    "Iraj",
+    "Gucci",
+    "We sell bags and stuff",
+    "More customers obviously",
+    "100000",
+    "Around august",
+]
+for msg in _lalith_turns:
+    gh = [{"role": "user", "content": msg}]
+    pre_llm_intake_context(
+        session_id=_sid,
+        user_message=msg,
+        conversation_history=gh,
+        platform="whatsapp",
+        phone=_phone,
+    )
+    out = transform_whatsapp_output(
+        response_text="",
+        session_id=_sid,
+        user_message=msg,
+        conversation_history=gh,
+        platform="whatsapp",
+        phone=_phone,
+    )
+assert STEPS[7] in out or CLOSE_LINE[:30].lower() in (out or "").lower()
 
 print("ok")

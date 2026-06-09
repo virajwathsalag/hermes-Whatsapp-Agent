@@ -41,7 +41,29 @@ _session_below_budget: set[str] = set()
 _session_lead_type: dict[str, str] = {}  # session_id -> web | marketing | unsure | general
 _session_returning_welcomed: set[str] = set()
 _session_freshly_synced: set[str] = set()  # phones that were just saved to CRM this session
+_session_fields: dict[str, dict[str, str]] = {}  # session_id -> captured intake fields
+_phone_intake_fields: dict[str, dict[str, str]] = {}  # survives session_id churn same phone
 _phones_in_active_intake: set[str] = set()  # E.164 digit keys — mid-flow, block returning hijack
+
+STEP_FIELD_MAP: dict[int, str] = {
+    1: "name",
+    2: "company",
+    3: "industry",
+    4: "goal",
+    5: "budget",
+    6: "timeline",
+    7: "contact",
+}
+
+MONTH_NAME_RE = re.compile(
+    r"\b(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|"
+    r"august|aug|september|sep|sept|october|oct|november|nov|december|dec)\b",
+    re.I,
+)
+TIMELINE_ANSWER_RE = re.compile(
+    r"\b(around|about|by|before|after|next|this|end\s+of|start\s+of|mid)\b",
+    re.I,
+)
 
 RETURNING_NEW_BUSINESS_STEPS = 5  # new company: company, industry, outcome, budget, timeline
 RETURNING_KNOWN_PROFILE_STEPS = 3  # same business: outcome, budget, timeline — then contact number
@@ -1009,11 +1031,30 @@ def _is_welcome_greeting_message(content: str) -> bool:
     return low.startswith("hi there. thanks for reaching out") and "what's your name" in low
 
 
+def _is_timeline_answer(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return False
+    if MONTH_NAME_RE.search(t):
+        return True
+    if TIMELINE_ANSWER_RE.search(t):
+        return True
+    if re.search(r"\b\d{4}\b", t):
+        return True
+    if re.search(r"\b(asap|soon|immediately|urgent|next\s+week|next\s+month)\b", t, re.I):
+        return True
+    return False
+
+
 def _is_valid_name_answer(text: str) -> bool:
     t = (text or "").strip()
     if not t or _is_noise_answer(t):
         return False
     if HELP_SEEKING_RE.search(t):
+        return False
+    if _is_timeline_answer(t):
+        return False
+    if re.fullmatch(r"\d+", t):
         return False
     if GREETING_IN_MESSAGE_RE.search(t) and re.search(
         r"\b(need|want|help|website|marketing|customer|business|grow|sell)\b",
@@ -1022,6 +1063,155 @@ def _is_valid_name_answer(text: str) -> bool:
     ):
         return False
     return True
+
+
+def _assistant_step_number(content: str) -> int:
+    """Map an assistant intake line to step 1-7 (0 if not a step)."""
+    if _is_welcome_greeting_message(content):
+        return 0
+    low = (content or "").strip().lower()
+    for n in range(7, 0, -1):
+        step = STEPS[n].lower()
+        if step in low or low == step:
+            return n
+    key = _detect_intake_step_key(content)
+    if not key:
+        return 0
+    for n, field in STEP_FIELD_MAP.items():
+        if field == key:
+            return n
+    return 0
+
+
+def _highest_filled_step(fields: dict[str, str]) -> int:
+    highest = 0
+    for n, key in STEP_FIELD_MAP.items():
+        if (fields.get(key) or "").strip():
+            highest = max(highest, n)
+    return highest
+
+
+def _accept_answer_for_step(
+    step_n: int,
+    text: str,
+    fields: dict[str, str],
+    phone: str | None,
+) -> bool:
+    t = (text or "").strip()
+    if not t or _is_noise_answer(t):
+        return False
+    key = STEP_FIELD_MAP.get(step_n, "")
+    if not key:
+        return False
+    if step_n == 1 and not _is_valid_name_answer(t):
+        return False
+    if step_n == 5 and not re.search(r"\d", t):
+        return False
+    if step_n == 7:
+        return bool(
+            _extract_phone_from_text(t)
+            or _user_confirms_current_phone(t)
+            or t
+        )
+    return True
+
+
+def _apply_step_answer(
+    step_n: int,
+    text: str,
+    fields: dict[str, str],
+    phone: str | None,
+) -> None:
+    if not _accept_answer_for_step(step_n, text, fields, phone):
+        return
+    key = STEP_FIELD_MAP[step_n]
+    if step_n == 7:
+        fields[key] = _resolve_contact_phone(text, phone)
+    else:
+        fields[key] = text[:200]
+
+
+def _phone_field_keys(phone: str | None) -> list[str]:
+    return [k for k in _phone_keys(phone) if k]
+
+
+def _session_field_store(session_id: str | None, phone: str | None) -> dict[str, str]:
+    sid = session_id or ""
+    if sid and _session_fields.get(sid):
+        return dict(_session_fields[sid])
+    store: dict[str, str] = {}
+    if phone and _phone_in_active_intake(phone):
+        for key in _phone_field_keys(phone):
+            for fk, fv in (_phone_intake_fields.get(key) or {}).items():
+                if fv and not store.get(fk):
+                    store[fk] = fv
+    return store
+
+
+def _persist_session_fields(
+    session_id: str | None,
+    phone: str | None,
+    fields: dict[str, str],
+) -> dict[str, str]:
+    sid = session_id or ""
+    clean = {k: v for k, v in fields.items() if (v or "").strip()}
+    if sid:
+        _session_fields[sid] = clean
+    for key in _phone_field_keys(phone):
+        _phone_intake_fields[key] = dict(clean)
+    return clean
+
+
+def _capture_reply_for_last_question(
+    session_id: str | None,
+    phone: str | None,
+    messages: list[tuple[str, str]],
+    user_message: str,
+) -> dict[str, str]:
+    """
+    Pair the latest user line with the last intake question we asked.
+    Primary source of truth — survives polluted GBrain / duplicate assistant lines.
+    """
+    if not (user_message or "").strip():
+        return _session_field_store(session_id, phone)
+    scope = list(messages)
+    if scope and scope[-1] == ("user", user_message.strip()):
+        scope = scope[:-1]
+    window = _intake_window(scope) if scope else []
+    prior_fields = _extract_intake_fields_from_window(window, phone) if window else {}
+    store = _session_field_store(session_id, phone)
+    merged_prior = dict(prior_fields)
+    for key, val in store.items():
+        if (val or "").strip():
+            merged_prior[key] = val
+    answering_step = _last_unanswered_intake_step(scope, merged_prior)
+    if not answering_step:
+        return _session_field_store(session_id, phone)
+    fields = _session_field_store(session_id, phone)
+    _apply_step_answer(answering_step, user_message, fields, phone)
+    return _persist_session_fields(session_id, phone, fields)
+
+
+def _merged_intake_fields(
+    window: list[tuple[str, str]],
+    phone: str | None,
+    session_id: str | None = None,
+) -> dict[str, str]:
+    window_fields = _extract_intake_fields_from_window(window, phone)
+    session_fields = _session_field_store(session_id, phone)
+    merged = dict(window_fields)
+    for key, val in session_fields.items():
+        if (val or "").strip():
+            merged[key] = val
+    return merged
+
+
+def _clear_field_stores(phone: str | None, session_id: str | None = None) -> None:
+    sid = session_id or ""
+    if sid:
+        _session_fields.pop(sid, None)
+    for key in _phone_field_keys(phone):
+        _phone_intake_fields.pop(key, None)
 
 
 def _is_name_step_question(content: str) -> bool:
@@ -1082,30 +1272,29 @@ def _extract_intake_fields_from_window(
     phone: str | None = None,
 ) -> dict[str, str]:
     """
-    Map user replies to intake fields by pairing each assistant question with the next user message.
-    Avoids positional drift when step 1 (name) is skipped or greetings are counted as answers.
+    Map user replies to intake fields by pairing assistant questions with the next user line.
+    Monotonic: duplicate earlier questions in polluted history cannot steal later answers.
     """
     fields: dict[str, str] = {}
-    pending: str | None = None
+    pending_step = 0
     for role, content in window:
         if role == "assistant":
-            key = _detect_intake_step_key(content)
-            if key:
-                pending = key
+            step_n = _assistant_step_number(content)
+            if step_n:
+                pending_step = step_n
             continue
-        if role != "user" or not pending:
+        if role != "user" or not pending_step:
             continue
         text = content.strip()
-        if _is_noise_answer(text):
+        if not _accept_answer_for_step(pending_step, text, fields, phone):
             continue
-        if pending == "contact":
-            fields["contact"] = _resolve_contact_phone(text, phone)
-        elif pending == "name":
-            if _is_valid_name_answer(text):
-                fields["name"] = text[:200]
-        else:
-            fields[pending] = text[:200]
-        pending = None
+        highest = _highest_filled_step(fields)
+        key = STEP_FIELD_MAP[pending_step]
+        if pending_step < highest and (fields.get(key) or "").strip():
+            pending_step = 0
+            continue
+        _apply_step_answer(pending_step, text, fields, phone)
+        pending_step = 0
     return fields
 
 
@@ -1195,6 +1384,7 @@ def _clear_intake_active(phone: str | None, session_id: str | None = None) -> No
     for key in _phone_keys(phone):
         _phones_in_active_intake.discard(key)
         _session_freshly_synced.discard(key)
+    _clear_field_stores(phone, session_id)
 
 
 def _persistent_conversation(phone: str | None, limit: int = 60) -> list[tuple[str, str]]:
@@ -1269,20 +1459,22 @@ def _current_intake_segment(messages: list[tuple[str, str]]) -> list[tuple[str, 
 def _backfill_session_transcript(session_id: str | None, phone: str | None) -> None:
     """
     Gateway often sends one turn; GBrain/state.db may have the full thread after sync.
-    Merge persistent history so mid-intake detection survives sparse in-memory transcripts.
+    Append-only merge — never replace in-memory transcript; never append after a close line.
     """
     sid = session_id or ""
     if not sid or not phone:
         return
     transcript = list(_session_transcript.get(sid) or [])
+    if transcript and _assistant_closed(transcript):
+        return
     segment = _current_intake_segment(_persistent_conversation(phone))
     if not segment:
         return
-    if len(segment) >= len(transcript):
-        merged = list(segment)
-        for msg in transcript:
-            if msg not in merged:
-                merged.append(msg)
+    merged = list(transcript)
+    for msg in segment:
+        if msg not in merged:
+            merged.append(msg)
+    if len(merged) > len(transcript):
         _session_transcript[sid] = merged
 
 
@@ -1292,7 +1484,7 @@ def _segment_has_active_intake(
 ) -> bool:
     if not segment or _closed_in_window(segment):
         return False
-    answers = _user_answers(segment)
+    answers = _user_answers(segment, phone=None, session_id=session_id)
     if not answers:
         return False
     if len(answers) < INTAKE_ANSWERS_REQUIRED:
@@ -1332,11 +1524,27 @@ def _last_intake_step_asked(window: list[tuple[str, str]]) -> int:
     for role, content in reversed(window):
         if role != "assistant":
             continue
-        low = content.strip().lower()
-        for n in range(7, 0, -1):
-            step = STEPS[n].lower()
-            if step in low or low == step:
-                return n
+        step_n = _assistant_step_number(content)
+        if step_n:
+            return step_n
+    return 0
+
+
+def _last_unanswered_intake_step(
+    messages: list[tuple[str, str]],
+    fields: dict[str, str],
+) -> int:
+    """Last intake question that does not yet have a captured answer (skips duplicate orphans)."""
+    for role, content in reversed(messages):
+        if role != "assistant":
+            continue
+        step_n = _assistant_step_number(content)
+        if not step_n:
+            continue
+        key = STEP_FIELD_MAP.get(step_n, "")
+        if key and (fields.get(key) or "").strip():
+            continue
+        return step_n
     return 0
 
 
@@ -1344,9 +1552,10 @@ def _next_intake_step_number(
     window: list[tuple[str, str]],
     answers: list[str],
     phone: str | None = None,
+    session_id: str | None = None,
 ) -> int:
-    """Next question index from Q&A pairing and the last intake line we sent."""
-    fields = _extract_intake_fields_from_window(window, phone)
+    """Next question index from merged fields and the last intake line we sent."""
+    fields = _merged_intake_fields(window, phone, session_id)
     if not fields.get("name"):
         return 1
     if not fields.get("company"):
@@ -1359,7 +1568,7 @@ def _next_intake_step_number(
         return 5
     if not fields.get("timeline"):
         return 6
-    if not fields.get("contact") and not _phone_step_asked(window):
+    if not fields.get("contact") and not _phone_step_asked(window, session_id):
         return 7
     if not fields.get("contact"):
         return 7
@@ -1372,8 +1581,9 @@ def _next_intake_step_number(
 def _user_answers(
     window: list[tuple[str, str]],
     phone: str | None = None,
+    session_id: str | None = None,
 ) -> list[str]:
-    fields = _extract_intake_fields_from_window(window, phone)
+    fields = _merged_intake_fields(window, phone, session_id)
     ordered: list[str] = []
     for key in ("name", "company", "industry", "goal", "budget", "timeline", "contact"):
         val = fields.get(key, "").strip()
@@ -1457,7 +1667,11 @@ def _session_has_active_intake(
     if not window or _closed_in_window(window):
         return False
 
-    answers = _user_answers(window)
+    user_msgs_in_window = [c for r, c in window if r == "user" and (c or "").strip()]
+    if not user_msgs_in_window:
+        return False
+
+    answers = _user_answers(window, phone, session_id)
     if answers and (
         len(answers) < INTAKE_ANSWERS_REQUIRED
         or not _phone_step_asked(transcript, session_id)
@@ -1927,7 +2141,7 @@ def _complete_with_contact(
     name: str | None = None,
 ) -> dict[str, Any]:
     prior = _prior_contact(phone, messages)
-    fields = _extract_intake_fields_from_window(window, phone)
+    fields = _merged_intake_fields(window, phone, session_id)
     final_name = (
         fields.get("name")
         or name
@@ -2025,10 +2239,15 @@ def _returning_new_contact_step(
     return None
 
 
-def _can_complete_intake(window: list[tuple[str, str]], answers: list[str]) -> bool:
-    if not _phone_step_asked(window):
+def _can_complete_intake(
+    window: list[tuple[str, str]],
+    answers: list[str],
+    phone: str | None = None,
+    session_id: str | None = None,
+) -> bool:
+    if not _phone_step_asked(window, session_id):
         return False
-    fields = _extract_intake_fields_from_window(window)
+    fields = _merged_intake_fields(window, phone, session_id)
     required = ("name", "company", "industry", "goal", "budget", "timeline")
     if not all((fields.get(k) or "").strip() for k in required):
         return False
@@ -2067,12 +2286,12 @@ def _continue_fresh_intake_step(
     sid = session_id or ""
     stored = _session_step.get(sid) or {}
     window = _active_intake_window(session_id, session_messages)
-    if not _user_answers(window) and _step1_asked_fresh(session_id, messages):
+    if not _user_answers(window, phone, session_id) and _step1_asked_fresh(session_id, messages):
         window = _active_intake_window(session_id, messages)
     if _step1_asked_fresh(session_id, session_messages) or _step1_asked_fresh(
         session_id, messages
     ):
-        answers = _user_answers(window, phone)
+        answers = _user_answers(window, phone, session_id)
         ret = _returning_new_contact_step(
             session_id,
             messages,
@@ -2092,7 +2311,7 @@ def _continue_fresh_intake_step(
             and not _phone_step_asked(messages, session_id)
         ):
             return {"n": 7, "message": STEPS[7], "in_intake": True, "mode": "intake"}
-        if not _can_complete_intake(window, answers):
+        if not _can_complete_intake(window, answers, phone, session_id):
             if _is_returning_new_project(session_id, phone, messages):
                 if not _returning_intake_started(session_messages) and not _returning_intake_started(
                     messages
@@ -2122,7 +2341,7 @@ def _continue_fresh_intake_step(
                         "in_intake": True,
                         "mode": "returning_intake",
                     }
-            n = _next_intake_step_number(window, answers, phone)
+            n = _next_intake_step_number(window, answers, phone, session_id)
             return {"n": n, "message": STEPS[n], "in_intake": True, "mode": "intake"}
         resolved = _resolve_contact_phone(
             answers[-1] if answers else (user_message or ""),
@@ -2140,8 +2359,8 @@ def _continue_fresh_intake_step(
         )
     if int(stored.get("n") or 0) == 1 and stored.get("mode") == "intake":
         window = _active_intake_window(session_id, session_messages)
-        answers = _user_answers(window, phone)
-        n = _next_intake_step_number(window, answers, phone)
+        answers = _user_answers(window, phone, session_id)
+        n = _next_intake_step_number(window, answers, phone, session_id)
         return {"n": n, "message": STEPS[n], "in_intake": True, "mode": "intake"}
     return None
 
@@ -2365,6 +2584,13 @@ def compute_intake_step(
     )
     _backfill_session_transcript(session_id, phone)
     session_messages = _session_transcript.get(session_id or "") or session_messages
+    if user_message and (session_id or phone):
+        sid_capture = session_id or ""
+        if NEW_LEAD_RE.search(user_message) and sid_capture:
+            _clear_field_stores(phone, session_id)
+        _capture_reply_for_last_question(
+            session_id, phone, session_messages, user_message
+        )
     messages = _merged_messages(conversation_history, phone)
     # Prefer backfilled in-session thread for step logic (gateway often sends one turn only).
     intake_thread = session_messages if len(session_messages) >= 2 else messages
@@ -2472,7 +2698,7 @@ def compute_intake_step(
                     return g
         return {"n": 0, "message": "", "in_intake": False, "mode": "idle"}
 
-    answers = _user_answers(window, phone)
+    answers = _user_answers(window, phone, session_id)
     scope = _conversation_scope(session_id, session_messages)
     _track_lead_type_and_budget(session_id, user_message, scope, answers, phone=phone)
     ret_contact = _returning_new_contact_step(
@@ -2487,8 +2713,8 @@ def compute_intake_step(
     if ret_contact:
         return ret_contact
 
-    if not _can_complete_intake(window, answers):
-        n = _next_intake_step_number(window, answers, phone)
+    if not _can_complete_intake(window, answers, phone, session_id):
+        n = _next_intake_step_number(window, answers, phone, session_id)
         step_out = {"n": n, "message": STEPS[n], "in_intake": True, "mode": "intake"}
         _track_intake_step_state(session_id, phone, step_out)
         return step_out
@@ -2830,15 +3056,15 @@ def transform_whatsapp_output(
             msgs = _normalize_messages(hist_for_step or history)
             scope = _conversation_scope(session_id, msgs)
             window = _active_intake_window(session_id, scope)
-            answers = _user_answers(window, phone)
-            fields = _extract_intake_fields_from_window(window, phone)
+            answers = _user_answers(window, phone, session_id)
+            fields = _merged_intake_fields(window, phone, session_id)
             if crm_contact and not step.get("crm_sync"):
                 sync = _sync_crm_on_qualification(
                     session_id, phone, crm_contact, answers, fields=fields
                 )
                 if sync and session_id:
                     _session_step[session_id] = {**step, "crm_sync": sync}
-            if _can_complete_intake(window, answers):
+            if _can_complete_intake(window, answers, phone, session_id):
                 _notify_qualified_lead(
                     session_id=session_id,
                     name=crm_contact.get("name") or fields.get("name", ""),
