@@ -14,6 +14,8 @@ from intake_guard import (
     _session_fields,
     _phone_intake_fields,
     _session_intake_closed,
+    _session_greeting_burst,
+    _session_contact,
     _session_returning,
     _history_dicts_from_transcript,
     _session_step,
@@ -512,5 +514,64 @@ for msg in _lalith_turns:
         phone=_phone,
     )
 assert STEPS[7] in out or CLOSE_LINE[:30].lower() in (out or "").lower()
+
+# Gunaraj path: welcome asks name once; polluted GBrain must not hijack fresh hello
+_session_transcript.clear()
+_session_step.clear()
+_session_fields.clear()
+_phone_intake_fields.clear()
+_phones_in_active_intake.clear()
+_session_greeting_burst.clear()
+_gunaraj_phone = "94774300834"
+_gunaraj_sid = "s-gunaraj"
+_gbrain_polluted = [
+    ("user", "Hellooo"),
+    ("assistant", GREETING),
+    ("user", "Gunaraj"),
+    ("assistant", STEPS[1]),
+    ("user", "Gunaraj"),
+    ("assistant", STEPS[2]),
+    ("user", "Gunaraj"),
+    ("assistant", STEPS[3]),
+    ("user", "Gunaraj"),
+    ("assistant", STEPS[4]),
+    ("user", "Gunaraj"),
+    ("assistant", STEPS[5]),
+    ("user", "100000"),
+    ("assistant", STEPS[6]),
+    ("user", "100000"),
+]
+_gunaraj_turns = [
+    "Hellooo",
+    "Gunaraj",
+    "Acme Shop",
+    "Retail",
+    "I need more customer",
+    "100000",
+    "June",
+    "Yep",
+]
+_hist = []
+_dup_name_sent = False
+with patch("intake_guard._persistent_conversation", return_value=_gbrain_polluted):
+    for msg in _gunaraj_turns:
+        step = compute_intake_step(_hist, msg, session_id=_gunaraj_sid, phone=_gunaraj_phone)
+        out = transform_whatsapp_output(
+            "",
+            session_id=_gunaraj_sid,
+            user_message=msg,
+            conversation_history=_hist,
+            platform="whatsapp",
+            phone=_gunaraj_phone,
+        )
+        if STEPS[1] in (out or ""):
+            _dup_name_sent = True
+        _hist = _history_dicts_from_transcript(_gunaraj_sid)
+    final_fields = _session_fields.get(_gunaraj_sid, {})
+    crm = _session_contact.get(_gunaraj_sid, {})
+assert not _dup_name_sent
+assert final_fields.get("name") == "Gunaraj" or crm.get("name") == "Gunaraj", (final_fields, crm)
+assert final_fields.get("company") == "Acme Shop" or "Acme Shop" in (crm.get("notes") or ""), (final_fields, crm)
+assert final_fields.get("goal") == "I need more customer" or "I need more customer" in (crm.get("notes") or ""), (final_fields, crm)
 
 print("ok")

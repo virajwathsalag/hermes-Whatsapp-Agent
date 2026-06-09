@@ -44,6 +44,7 @@ _session_freshly_synced: set[str] = set()  # phones that were just saved to CRM 
 _session_fields: dict[str, dict[str, str]] = {}  # session_id -> captured intake fields
 _phone_intake_fields: dict[str, dict[str, str]] = {}  # survives session_id churn same phone
 _phones_in_active_intake: set[str] = set()  # E.164 digit keys — mid-flow, block returning hijack
+_session_fresh_intake: set[str] = set()  # block GBrain backfill on new hello same number
 
 STEP_FIELD_MAP: dict[int, str] = {
     1: "name",
@@ -911,7 +912,8 @@ def _merged_messages(conversation_history: list | None, phone: str | None) -> li
     if not gbrain:
         return session
     if not session:
-        return gbrain
+        # Fresh session — do not inject stale GBrain into intake step logic.
+        return session
     return gbrain + session if len(gbrain) > len(session) else session + gbrain
 
 
@@ -960,8 +962,14 @@ def _greeting_complete(messages: list[tuple[str, str]], session_id: str | None =
 
 
 def _step1_asked(messages: list[tuple[str, str]]) -> bool:
+    return _name_question_asked(messages)
+
+
+def _name_question_asked(messages: list[tuple[str, str]]) -> bool:
+    """True once we asked for their personal name (welcome line or step 1)."""
     return any(
-        role == "assistant" and _intake_started_marker(content)
+        role == "assistant"
+        and (_intake_started_marker(content) or _is_welcome_greeting_message(content))
         for role, content in messages
     )
 
@@ -1068,7 +1076,7 @@ def _is_valid_name_answer(text: str) -> bool:
 def _assistant_step_number(content: str) -> int:
     """Map an assistant intake line to step 1-7 (0 if not a step)."""
     if _is_welcome_greeting_message(content):
-        return 0
+        return 1
     low = (content or "").strip().lower()
     for n in range(7, 0, -1):
         step = STEPS[n].lower()
@@ -1303,7 +1311,9 @@ def _intake_window(messages: list[tuple[str, str]]) -> list[tuple[str, str]]:
     start = _intake_block_start(messages)
     block = messages[start:]
     for i, (role, content) in enumerate(block):
-        if role == "assistant" and _is_name_step_question(content):
+        if role == "assistant" and (
+            _is_name_step_question(content) or _is_welcome_greeting_message(content)
+        ):
             return block[i:]
     for i, (role, content) in enumerate(block):
         if role == "assistant" and _intake_started_marker(content):
@@ -1349,6 +1359,24 @@ def _step1_asked_fresh(
     return _step1_asked(messages)
 
 
+def _merge_message_lists(
+    existing: list[tuple[str, str]],
+    incoming: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    """Append only the non-overlapping suffix — avoids duplicate replay from gateway history."""
+    if not incoming:
+        return list(existing)
+    if not existing:
+        return list(incoming)
+    max_ov = min(len(existing), len(incoming))
+    overlap = 0
+    for n in range(max_ov, 0, -1):
+        if existing[-n:] == incoming[:n]:
+            overlap = n
+            break
+    return existing + incoming[overlap:]
+
+
 def _accumulate_session_transcript(
     session_id: str | None,
     conversation_history: list | None,
@@ -1359,13 +1387,12 @@ def _accumulate_session_transcript(
     if not sid:
         return _messages_from_history(conversation_history)
     transcript = list(_session_transcript.get(sid) or [])
-    for msg in _messages_from_history(conversation_history):
-        if not transcript or transcript[-1] != msg:
-            transcript.append(msg)
+    transcript = _merge_message_lists(
+        transcript, _messages_from_history(conversation_history)
+    )
     if user_message:
         um = ("user", user_message)
-        if not transcript or transcript[-1] != um:
-            transcript.append(um)
+        transcript = _merge_message_lists(transcript, [um])
     _session_transcript[sid] = transcript
     return transcript
 
@@ -1381,6 +1408,9 @@ def _mark_intake_active(phone: str | None, session_id: str | None = None) -> Non
 
 
 def _clear_intake_active(phone: str | None, session_id: str | None = None) -> None:
+    sid = session_id or ""
+    if sid:
+        _session_fresh_intake.discard(sid)
     for key in _phone_keys(phone):
         _phones_in_active_intake.discard(key)
         _session_freshly_synced.discard(key)
@@ -1464,11 +1494,25 @@ def _backfill_session_transcript(session_id: str | None, phone: str | None) -> N
     sid = session_id or ""
     if not sid or not phone:
         return
-    transcript = list(_session_transcript.get(sid) or [])
-    if transcript and _assistant_closed(transcript):
+    if sid in _session_fresh_intake:
         return
     segment = _current_intake_segment(_persistent_conversation(phone))
     if not segment:
+        return
+    transcript = list(_session_transcript.get(sid) or [])
+    if not transcript:
+        # Redeploy / sparse gateway — hydrate mid-intake thread from persistent store.
+        _session_transcript[sid] = list(segment)
+        return
+    if not any(role == "assistant" for role, _ in transcript):
+        if _segment_has_active_intake(segment, sid):
+            merged = list(segment)
+            for msg in transcript:
+                if msg not in merged:
+                    merged.append(msg)
+            _session_transcript[sid] = merged
+        return
+    if _assistant_closed(transcript):
         return
     merged = list(transcript)
     for msg in segment:
@@ -1643,12 +1687,17 @@ def _session_has_active_intake(
     if phone and _phone_in_active_intake(phone):
         return True
 
-    if phone:
-        _backfill_session_transcript(sid, phone)
-        segment = _current_intake_segment(_persistent_conversation(phone))
-        if _segment_has_active_intake(segment, sid):
-            _mark_intake_active(phone, sid)
-            return True
+    transcript = _session_transcript.get(sid) or session_messages
+    if phone and sid not in _session_fresh_intake:
+        if not transcript:
+            _backfill_session_transcript(sid, phone)
+            transcript = _session_transcript.get(sid) or session_messages
+        if transcript and any(role == "assistant" for role, _ in transcript):
+            _backfill_session_transcript(sid, phone)
+            segment = _current_intake_segment(_persistent_conversation(phone))
+            if _segment_has_active_intake(segment, sid):
+                _mark_intake_active(phone, sid)
+                return True
 
     stored = _session_step.get(sid) or {}
     if stored.get("in_intake") and stored.get("mode") in ("intake", "returning_intake"):
@@ -1658,7 +1707,6 @@ def _session_has_active_intake(
                 _mark_intake_active(phone, sid)
             return True
 
-    transcript = _session_transcript.get(sid) or session_messages
     if not transcript:
         return False
 
@@ -2257,6 +2305,8 @@ def _can_complete_intake(
         "kind of business",
         "hoping to achieve",
         "budget",
+        "when would you",
+        "get started",
         "best number to reach you",
     )
     assistant_text = " ".join(c.lower() for r, c in window if r == "assistant")
@@ -2579,11 +2629,20 @@ def compute_intake_step(
     phone: str | None = None,
     session_id: str | None = None,
 ) -> dict[str, Any]:
+    sid = session_id or ""
     session_messages = _accumulate_session_transcript(
         session_id, conversation_history, user_message
     )
+    if (
+        user_message
+        and GREETING_ONLY_RE.match(user_message.strip())
+        and len(session_messages) <= 1
+        and sid not in _session_intake_closed
+    ):
+        _clear_field_stores(phone, session_id)
+        _session_fresh_intake.add(sid)
     _backfill_session_transcript(session_id, phone)
-    session_messages = _session_transcript.get(session_id or "") or session_messages
+    session_messages = _session_transcript.get(sid) or session_messages
     if user_message and (session_id or phone):
         sid_capture = session_id or ""
         if NEW_LEAD_RE.search(user_message) and sid_capture:
@@ -2592,9 +2651,8 @@ def compute_intake_step(
             session_id, phone, session_messages, user_message
         )
     messages = _merged_messages(conversation_history, phone)
-    # Prefer backfilled in-session thread for step logic (gateway often sends one turn only).
-    intake_thread = session_messages if len(session_messages) >= 2 else messages
-    sid = session_id or ""
+    # Session transcript only — never use stale GBrain for step logic.
+    intake_thread = session_messages if session_messages else messages
     if sid and sid in _session_intake_closed:
         if SHORT_ACK_RE.match((user_message or "").strip()):
             return {
@@ -2674,7 +2732,7 @@ def compute_intake_step(
     if (
         _greeting_complete(intake_thread, session_id)
         and _user_re_engaged(user_message)
-        and not _step1_asked(intake_thread)
+        and not _name_question_asked(intake_thread)
     ):
         return {"n": 1, "message": STEPS[1], "in_intake": True, "mode": "intake"}
 
