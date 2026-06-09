@@ -17,10 +17,10 @@ For any business enquiry on WhatsApp (website, marketing, growth, pricing):
 ## Order
 
 1. Detect lead type (web / marketing / unsure / price inquiry)
-2. Collect: name → company → industry → outcome → budget → finish month (one question per message)
+2. Collect: name → company → industry → outcome → budget → finish month → contact number (one question per message)
 3. Score internally (qualified vs not) — user never sees the score
-4. If qualified: email, then CRM, then warm handoff
+4. If qualified: confirm contact number, then CRM, then warm handoff
 5. If not qualified: one polite exit line from qualification-framework.md
 6. Web budget below 100,000 LKR: flag `BELOW_MIN_WEB_BUDGET` in CRM notes, continue and close normally
 
-Do not ask for email before business fields are answered in the **current** conversation.
+Do not ask for contact number before business fields are answered in the **current** conversation.

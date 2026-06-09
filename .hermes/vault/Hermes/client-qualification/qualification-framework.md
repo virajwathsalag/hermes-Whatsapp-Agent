@@ -5,17 +5,17 @@
 ### Web Development
 Triggers: website, web design, company site, need a site, online presence.
 
-Flow: name → company → industry → desired outcome → goal clarification (if vague) → project budget → finish month → email → close.
+Flow: name → company → industry → desired outcome → goal clarification (if vague) → project budget → finish month → contact number → close.
 
 ### Content Marketing
 Triggers: marketing help, social media, ads, more customers, brand awareness.
 
-Flow: name → company → industry → desired outcome → goal clarification (if vague) → monthly budget → start timing → email → close.
+Flow: name → company → industry → desired outcome → goal clarification (if vague) → monthly budget → start timing → contact number → close.
 
 ### Unsure
 Triggers: wants to grow but not sure what they need.
 
-Flow: how can we help → name → company → industry → what to improve → how customers find them → website? → social media? → budget → start timing → email → close.
+Flow: how can we help → name → company → industry → what to improve → how customers find them → website? → social media? → budget → start timing → contact number → close.
 
 Use discovery questions one at a time. Do not suggest services until after budget is known.
 

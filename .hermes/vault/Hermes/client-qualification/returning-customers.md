@@ -7,10 +7,10 @@ A returning customer should never repeat full intake from scratch if you already
 ## The Rule
 
 **First-time customer:**
-Name → Company → Industry → Goal → Budget → Timeline → Email → Handoff
+Name → Company → Industry → Goal → Budget → Timeline → Contact number → Handoff
 
 **Returning customer:**
-Greet by name → Confirm what they need now → Collect only missing fields for this project → Email (confirm prior if known) → Handoff
+Greet by name → Confirm what they need now → Collect only missing fields for this project → Contact number → Handoff
 
 Never re-ask name, company, or industry if already known for the same business unless they said it is a new company.
 
@@ -46,7 +46,7 @@ Agent: Got it.
 
 Are you mainly looking to generate inquiries, increase brand awareness, or drive more sales?
 
-(continue qualification for budget, timeline, email)
+(continue qualification for budget, timeline, contact number)
 
 ## Scenario 3: Prior Marketing Client, Now Wants Website
 
@@ -106,15 +106,16 @@ Agent: Got it.
 
 What are you hoping to achieve through marketing?
 
-(continue — budget, timeline, email confirm)
+(continue — budget, timeline, contact number)
 
 ## Same Ongoing Project
 
 If they confirm it is about the existing project, acknowledge and hand off to the founder. Do not re-run intake.
 
-## Email on Return
+## Contact number on return
 
-If you have their email from before:
-should we use [email] again to reach you on this one?
+After budget and timeline, ask:
 
-Only ask for a new email if they say no.
+is this the best number to reach you on, or do you have another one?
+
+If they give another number, use that for follow-up.

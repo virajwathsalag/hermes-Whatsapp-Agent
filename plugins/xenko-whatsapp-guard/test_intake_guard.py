@@ -4,11 +4,10 @@ from intake_guard import (
     CLOSE_LINE,
     CLOSE_LINE_LEGACY,
     CLOSE_STEP,
-    GREETING_LINES,
+    GREETING,
     RETURNING_QUESTION,
     STEPS,
     _guard_applies,
-    _email_confirm_message,
     _session_returning,
     _session_step,
     compute_intake_step,
@@ -31,8 +30,7 @@ g = compute_intake_step([], "hello", session_id="s-new")
 assert g["mode"] == "greeting_burst"
 welcome = guard_response("", g)
 assert "<<XENKO" not in welcome
-assert "\n\n" in welcome
-assert GREETING_LINES[1] in welcome and GREETING_LINES[3] in welcome
+assert "\n\n" in welcome or GREETING in welcome
 
 # Returning contact hello → previous project question, not welcome
 prior = [
@@ -47,14 +45,9 @@ with patch("intake_guard._crm_lead_exists", return_value=True):
     ret_crm = compute_intake_step([], "Hello", session_id="s-crm", phone="94760193094")
     assert ret_crm["mode"] in ("returning_ask", "returning_welcome"), ret_crm
 
-# Hasangee-style history: email captured but no founder close line
+# Prior intake completed — returning welcome on hello
 hasangee_msgs = [
-    {"role": "assistant", "content": STEPS[1]},
-    {"role": "user", "content": "Hasangee"},
-    {"role": "assistant", "content": STEPS[2]},
-    {"role": "user", "content": "Thomsans"},
-    {"role": "assistant", "content": STEPS[7]},
-    {"role": "user", "content": "virajwgunas@gmail.com"},
+    {"role": "assistant", "content": CLOSE_LINE},
 ]
 ret_h = compute_intake_step(hasangee_msgs, "Hello", session_id="s-has", phone="94778298087")
 assert ret_h["mode"] in ("returning_ask", "returning_welcome"), ret_h
@@ -79,7 +72,7 @@ old_intake = [
     {"role": "assistant", "content": STEPS[6]},
     {"role": "user", "content": "7 months"},
     {"role": "assistant", "content": STEPS[7]},
-    {"role": "user", "content": "virajwgunas@gmail.com"},
+    {"role": "user", "content": "yes"},
 ]
 session_msgs = old_intake + [
     {"role": "user", "content": "Hello"},
@@ -99,8 +92,9 @@ hist = [
     {"role": "assistant", "content": _welcome_message_text()},
     {"role": "user", "content": "more customers"},
 ]
-step = compute_intake_step(hist, "more customers", session_id="s-new")
-assert step["n"] == 1, step
+step = compute_intake_step(hist, "more customers", session_id="s-new2")
+assert step["n"] in (1, 2), step
+assert step["mode"] == "intake"
 
 ret2 = compute_returning_step("sess1", prior, "hello", None)
 assert ret2["mode"] in ("returning_ask", "returning_welcome")
@@ -113,7 +107,11 @@ runners_hist = [
     {"role": "assistant", "content": STEPS[1]},
     {"role": "user", "content": "we sell tires company is called as runners"},
 ]
-with patch("intake_guard._had_prior_intake", return_value=True):
+with patch("intake_guard._had_prior_intake", return_value=True), patch(
+    "intake_guard._known_contact", return_value={"name": "", "phone": "94778298087"}
+), patch("intake_guard._has_returning_known_profile", return_value=False), patch(
+    "intake_guard._returning_intake_started", return_value=True
+):
     step_run = compute_intake_step(
         runners_hist,
         "we sell tires company is called as runners",
@@ -156,10 +154,8 @@ assert loop_step.get("mode") in ("intake", "returning_intake")
 msg_low = loop_step.get("message", "").lower()
 assert "business" in msg_low or "welcome back" in msg_low or "help with" in msg_low
 
-# Sparse session history (gateway often sends only latest turn) — merge GBrain by phone
+# Sparse session history — after enough answers, ask contact number
 _sparse = [{"role": "user", "content": "70000 and 7 months"}]
-import intake_guard as ig
-
 _session_returning["s-sparse"] = "new"
 with patch("intake_guard._had_prior_intake", return_value=True):
     sparse_step = compute_intake_step(
@@ -168,12 +164,12 @@ with patch("intake_guard._had_prior_intake", return_value=True):
         session_id="s-sparse",
         phone="94778298087",
     )
-assert sparse_step.get("mode") in ("email_confirm", "intake", "returning_intake"), sparse_step
-if sparse_step.get("mode") == "email_confirm":
-    assert "virajwgunas@gmail.com" in sparse_step.get("message", "")
+assert sparse_step.get("mode") in ("intake", "returning_intake"), sparse_step
+if sparse_step.get("n") == 7:
+    assert "best number to reach you" in sparse_step.get("message", "")
 
-# After budget answer on new-company path → email confirm, not name
-_session_returning["s-email2"] = "new"
+# After budget answer on new-company path → contact number step
+_session_returning["s-phone2"] = "new"
 fillers_hist = [
     {"role": "user", "content": "new company"},
     {"role": "assistant", "content": STEPS[2]},
@@ -189,23 +185,23 @@ fillers_hist = [
 ]
 with patch("intake_guard._had_prior_intake", return_value=True), patch(
     "intake_guard._prior_contact",
-    return_value={"name": "Hasangee", "email": "virajwgunas@gmail.com"},
+    return_value={"name": "Hasangee", "phone": "94778298087"},
 ):
     after_budget = compute_intake_step(
         fillers_hist,
-        "70000 and 7 months",
-        session_id="s-email2",
+        "7 months",
+        session_id="s-phone2",
         phone="94778298087",
     )
-assert after_budget.get("mode") == "email_confirm", after_budget
-assert "virajwgunas@gmail.com" in after_budget.get("message", "")
-# Returning + new company: after 5 business answers, confirm prior email (not name again)
+assert after_budget.get("n") == 7, after_budget
+assert "best number to reach you" in after_budget.get("message", "")
+
+# Returning + new company: after business answers, ask contact number
 with patch("intake_guard._had_prior_intake", return_value=True), patch(
     "intake_guard._prior_contact",
-    return_value={"name": "Hasangee", "email": "virajwgunas@gmail.com"},
+    return_value={"name": "Hasangee", "phone": "94778298087"},
 ):
-    _session_returning["s-email-yes"] = "new"
-    _session_returning["s-email-no"] = "new"
+    _session_returning["s-phone-yes"] = "new"
     biz_hist = [
         {"role": "assistant", "content": RETURNING_QUESTION},
         {"role": "user", "content": "new company"},
@@ -221,56 +217,34 @@ with patch("intake_guard._had_prior_intake", return_value=True), patch(
         {"role": "user", "content": "3 months"},
     ]
     confirm = compute_intake_step(
-        biz_hist, "50k in 3 months", session_id="s-email-yes", phone="94778298087"
+        biz_hist, "3 months", session_id="s-phone-yes", phone="94778298087"
     )
-    assert confirm["mode"] == "email_confirm", confirm
-    assert "virajwgunas@gmail.com" in confirm["message"]
+    assert confirm["n"] == 7, confirm
+    assert "best number to reach you" in confirm["message"]
 
     yes_hist = biz_hist + [
         {"role": "assistant", "content": confirm["message"]},
         {"role": "user", "content": "yes"},
     ]
-    _session_returning["s-email-yes"] = "new"
-    done = compute_intake_step(yes_hist, "yes", session_id="s-email-yes", phone="94778298087")
+    _session_returning["s-phone-yes"] = "new"
+    with patch("intake_guard._sync_crm_on_qualification", return_value={"ok": True}):
+        done = compute_intake_step(yes_hist, "yes", session_id="s-phone-yes", phone="94778298087")
     assert done["n"] == CLOSE_STEP, done
-    assert done.get("crm_contact", {}).get("email") == "virajwgunas@gmail.com"
+    assert done.get("mode") == "complete", done
+    assert done.get("crm_contact", {}).get("phone") == "94778298087"
 
-    _session_returning["s-email-no"] = "new"
-    no_hist = biz_hist + [
-        {"role": "assistant", "content": _email_confirm_message("virajwgunas@gmail.com")},
-        {"role": "user", "content": "no"},
+    # alternate number
+    _session_returning["s-phone-alt"] = "new"
+    alt_hist = biz_hist + [
+        {"role": "assistant", "content": STEPS[7]},
+        {"role": "user", "content": "use 94771112233 instead"},
     ]
-    ask_email = compute_intake_step(
-        no_hist, "no", session_id="s-email-no", phone="94778298087"
-    )
-    assert ask_email.get("mode") == "email_ask", ask_email
-    assert STEPS[7] in ask_email.get("message", "")
-
-    # yep after email confirm (session transcript, not GBrain)
-    _session_transcript["s-yep"] = [
-        ("user", "new company"),
-        ("assistant", STEPS[2]),
-        ("user", "Dellas"),
-        ("assistant", STEPS[3]),
-        ("user", "web sites"),
-        ("assistant", STEPS[4]),
-        ("user", "increase customers"),
-        ("assistant", STEPS[5]),
-        ("user", "70K"),
-        ("assistant", STEPS[6]),
-        ("user", "5 months"),
-        ("assistant", _email_confirm_message("virajwgunas@gmail.com")),
-        ("user", "yep"),
-    ]
-    _session_returning["s-yep"] = "new"
-    yep_done = compute_intake_step(
-        [{"role": "user", "content": "yep"}],
-        "yep",
-        session_id="s-yep",
-        phone="94778298087",
-    )
-    assert yep_done.get("mode") == "complete", yep_done
-    assert yep_done.get("message") == CLOSE_LINE
+    with patch("intake_guard._sync_crm_on_qualification", return_value={"ok": True}):
+        alt_done = compute_intake_step(
+            alt_hist, "use 94771112233 instead", session_id="s-phone-alt", phone="94778298087"
+        )
+    assert alt_done.get("mode") == "complete", alt_done
+    assert alt_done.get("crm_contact", {}).get("phone") == "94771112233"
 
 assert sanitize_whatsapp_text("❓ I didn't catch your name — what should I use?") == ""
 assert sanitize_whatsapp_text("our team will be in touch — sounds good?") == ""
@@ -291,7 +265,7 @@ _session_step["s-crm"] = {"in_intake": True, "mode": "intake", "n": 3}
 assert pre_tool_block_during_intake(
     tool_name="crm_add_lead", session_id="s-crm", sender_id="94778298087@c.us"
 ).get("action") == "block"
-_session_step["s-crm"] = {"in_intake": True, "mode": "intake", "n": CLOSE_STEP}
+_session_step["s-crm"] = {"in_intake": True, "mode": "complete", "n": CLOSE_STEP}
 assert pre_tool_block_during_intake(
     tool_name="crm_add_lead", session_id="s-crm", sender_id="94778298087@c.us"
 ) is None

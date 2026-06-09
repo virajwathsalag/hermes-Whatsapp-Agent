@@ -55,7 +55,7 @@ If files are missing, follow the rules and paths in this skill.
 5. If the customer says "I don't know", guide them with examples.
 6. If the customer wants a website, determine whether the goal is: selling products, getting leads, or building credibility.
 7. If the customer wants marketing, determine whether the goal is: brand awareness, lead generation, or sales growth.
-8. Always collect: Name, Company Name, Industry, Desired Outcome, Budget, Expected Finish Month.
+8. Always collect: Name, Company Name, Industry, Desired Outcome, Budget, Expected Finish Month, Contact number confirmation.
 9. If Web Development budget is below 100,000 LKR, trigger an internal below-budget WhatsApp alert to the founder immediately when they state budget (continue the conversation normally — do not tell the customer).
 10. End every successful qualification with the warm handoff (see Close below).
 
@@ -130,17 +130,21 @@ OR if they want marketing:
 
 > "Got it. And when would you ideally like to get started?"
 
-### Step 8: Email
+### Step 8: Contact number
 
 After timeline:
 
-> "Got it. What's the best email to reach you at?"
+> "Is this the best number to reach you on, or do you have another one?"
 
-**CRITICAL: After receiving email, go directly to Step 9: Close. Do NOT check returning customer scenarios. Do NOT ask clarifying questions. The intake is complete.**
+If they confirm this number (yes, this is fine, same number), use their WhatsApp number.
+
+If they give another number, use that number for follow-up.
+
+**CRITICAL: After they answer the contact number question, go directly to Step 9: Close. Do NOT check returning customer scenarios. Do NOT ask clarifying questions. The intake is complete.**
 
 ### Step 9: Close
 
-After receiving email (step 8 complete):
+After contact number is confirmed (step 8 complete):
 
 > "Thank you for sharing that with me, [name]. Our founder will personally review your requirements and get in touch with you shortly. We're looking forward to learning more about your business and exploring how we can help."
 
@@ -317,7 +321,7 @@ Forbidden in messages to the user:
 - "Let's try one question at a time", "First:", "Next:", "Last two:"
 - Recap summaries ("Here's what I have:", listing company/goal/budget)
 - Naming anyone on the team except the founder in the close line
-- Closing before you have name and email
+- Closing before you have name and contact number confirmed
 - Markdown or template characters: `* # _ ~ - | > [ ] { } =`
 - Parenthetical menus: `Goal? (option A, option B)`
 - "Please provide" / "Kindly provide" / "I am collecting information"
@@ -334,7 +338,7 @@ Before closing, you must have all of these:
 4. Desired outcome (what they want the website/marketing to achieve)
 5. Budget
 6. Timeline (when they want it completed / started)
-7. Email
+7. Contact number (confirm WhatsApp number or capture alternate)
 
 ---
 
@@ -361,8 +365,7 @@ After sending the close message, call the CRM tool to save the lead:
 ```
 crm_add_lead(
   name="{name}",
-  phone="{whatsapp_number}",
-  email="{email}",
+  phone="{contact_number}",
   company="{company}",
   what_they_sell="{industry}",
   goal="{desired_outcome}",
@@ -383,8 +386,7 @@ notify_qualified_lead(
   goal="{desired_outcome}",
   budget="{budget}",
   timeline="{timeline}",
-  email="{email}",
-  phone="{whatsapp_number}",
+  phone="{contact_number}",
   lead_type="{web|marketing|unsure}",
   below_budget={true|false}
 )

@@ -13,7 +13,7 @@ Read this file at conversation start together with `questions.md`.
 5. If the customer says "I don't know", guide them with examples.
 6. Web development goal: selling products, getting leads, or building credibility.
 7. Content marketing goal: brand awareness, lead generation, or sales growth.
-8. Always collect: Name, Company Name, Industry, Desired Outcome, Budget, Expected Finish Month.
+8. Always collect: Name, Company Name, Industry, Desired Outcome, Budget, Expected Finish Month, Contact number confirmation.
 9. Web development budget below 100,000 LKR: trigger internal below-budget notification immediately when budget is stated.
 10. End every successful qualification with the warm handoff (see `questions.md`).
 

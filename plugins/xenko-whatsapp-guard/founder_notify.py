@@ -119,23 +119,34 @@ def notify_below_budget_web(
     session_id: str | None,
     name: str = "",
     company: str = "",
+    industry: str = "",
+    goal: str = "",
     budget_text: str = "",
     amount_lkr: int | None = None,
+    timeline: str = "",
     phone: str | None = None,
-    destination: str | None = "home",
+    destination: str | None = "founder",
 ) -> None:
     who = name.strip() or "unknown"
     co = company.strip() or "unknown"
     budget = budget_text.strip() or (f"{amount_lkr:,} LKR" if amount_lkr else "unknown")
     lead_phone = (phone or "").strip() or "unknown"
-    msg = (
-        f"below-budget web lead\n"
-        f"name: {who}\n"
-        f"company: {co}\n"
-        f"budget: {budget}\n"
-        f"whatsapp: {lead_phone}"
-    )
-    notify_founder(msg, session_id=session_id, dedupe_key="below_budget", destination=destination)
+    msg_lines = [
+        "below-budget web lead",
+        f"name: {who}",
+        f"company: {co}",
+    ]
+    if industry.strip():
+        msg_lines.append(f"industry: {industry.strip()[:120]}")
+    if goal.strip():
+        msg_lines.append(f"goal: {goal.strip()[:200]}")
+    msg_lines.extend([
+        f"budget: {budget}",
+    ])
+    if timeline.strip():
+        msg_lines.append(f"timeline: {timeline.strip()[:120]}")
+    msg_lines.append(f"whatsapp: {lead_phone}")
+    notify_founder("\n".join(msg_lines), session_id=session_id, dedupe_key="below_budget", destination=destination)
 
 
 def notify_qualified_lead(
@@ -151,7 +162,7 @@ def notify_qualified_lead(
     phone: str | None = None,
     lead_type: str = "",
     below_budget: bool = False,
-    destination: str | None = "home",
+    destination: str | None = "founder",
 ) -> None:
     tag = "qualified lead"
     if below_budget:
@@ -171,8 +182,6 @@ def notify_qualified_lead(
         lines.append(f"budget: {budget.strip()[:120]}")
     if timeline.strip():
         lines.append(f"timeline: {timeline.strip()[:120]}")
-    if email.strip():
-        lines.append(f"email: {email.strip()}")
     if phone:
-        lines.append(f"whatsapp: {phone.strip()}")
+        lines.append(f"contact: {phone.strip()}")
     notify_founder("\n".join(lines), session_id=session_id, dedupe_key="qualified", destination=destination)

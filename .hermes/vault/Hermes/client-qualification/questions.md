@@ -26,7 +26,7 @@ See `conversation-paths.md` and `returning-customers.md` for full dialogue examp
 5. Goal clarification (when needed — see conversation-paths.md)
 6. Budget (project budget for web; monthly budget for marketing)
 7. Expected finish month or start timing
-8. Email (required for CRM before close)
+8. Contact number (confirm WhatsApp number or capture alternate)
 
 ## Step templates
 
@@ -78,13 +78,13 @@ If web budget is below 100,000 LKR, trigger internal below-budget notification i
 
 **Marketing:** when would you like to get started?
 
-### Step 8 — email
+### Step 8 — contact number
 
-what's the best email to reach you on?
+is this the best number to reach you on, or do you have another one?
 
-Skip only if they already gave a valid email in this intake.
+If they confirm (yes, this is fine), use their WhatsApp number. If they give another number, use that.
 
-## Close — after email collected
+## Close — after contact number confirmed
 
 Do not ask another question. Do not recap their answers as a list. Save to CRM, then send the warm handoff:
 
