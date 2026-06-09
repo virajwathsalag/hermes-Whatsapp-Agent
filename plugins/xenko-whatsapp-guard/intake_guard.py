@@ -137,7 +137,7 @@ PHONE_IN_TEXT_RE = re.compile(r"(?:\+?\d[\d\s\-()]{7,}\d|\d{9,})")
 MARKETING_RE = STRONG_INTAKE_RE
 
 GREETING_ONLY_RE = re.compile(
-    r"^(?:hi|hello|hey|hiya|howdy|yo|good\s*(?:morning|afternoon|evening)|"
+    r"^(?:hi+|hello+|hey+|helo+|hellow?|hiya|howdy|yo|good\s*(?:morning|afternoon|evening)|"
     r"sup|greetings)(?:\s+there)?[\s!.?,]*$",
     re.I,
 )
@@ -778,10 +778,6 @@ def _extract_phone(session_id: str | None = None, **kwargs: Any) -> str | None:
 
 
 def _crm_lead_exists(phone: str) -> bool:
-    # First check: was this phone just synced to CRM in this session?
-    # If so, don't treat as returning - they're still in the same intake flow
-    if phone and phone in _session_freshly_synced:
-        return False
     try:
         import importlib.util
 
@@ -801,9 +797,6 @@ def _crm_lead_exists(phone: str) -> bool:
 def _had_prior_intake(phone: str | None, messages: list[tuple[str, str]]) -> bool:
     # Mid-flow intake on this number must never be treated as a returning lead.
     if phone and _phone_in_active_intake(phone):
-        return False
-    # Don't treat as prior intake if this phone was just synced to CRM in this session
-    if phone and phone in _session_freshly_synced:
         return False
     """GBrain history, CRM lead row, or this session already completed intake."""
     # Only check for close line in PRIOR messages, not current session
@@ -986,19 +979,93 @@ def _classify_user_message(user_message: str) -> str:
     return "general"
 
 
-def _intake_window(messages: list[tuple[str, str]]) -> list[tuple[str, str]]:
-    """User answers for the 5-step form — excludes their reply to 'what are you here for'."""
-    for i, (role, content) in enumerate(messages):
-        if role == "assistant" and _intake_started_marker(content):
-            return messages[i + 1 :]
+def _is_name_step_question(content: str) -> bool:
+    low = (content or "").lower()
+    if "name of your business" in low or "business called" in low:
+        return False
+    return (
+        "before we get started" in low
+        or "what's your name" in low
+        or ("your name" in low and "business" not in low and "company" not in low)
+    )
 
-    start = 0
-    for i, (role, content) in enumerate(messages):
-        if role == "user" and _is_intake_trigger(content):
-            start = i
-        if role == "user" and NEW_LEAD_RE.search(content):
-            start = i
-    return messages[start:]
+
+def _detect_intake_step_key(content: str) -> str | None:
+    low = (content or "").lower()
+    if _is_name_step_question(content):
+        return "name"
+    if "name of your business" in low or "business called" in low:
+        return "company"
+    if "kind of business" in low or "what industry" in low:
+        return "industry"
+    if (
+        "hoping to achieve" in low
+        or "help you achieve" in low
+        or "help with" in low
+        or "hoping we can help" in low
+    ):
+        return "goal"
+    if "budget" in low:
+        return "budget"
+    if "when would you" in low or "get started" in low or "completed" in low:
+        return "timeline"
+    if "best number to reach you" in low:
+        return "contact"
+    return None
+
+
+def _is_noise_answer(text: str) -> bool:
+    if not text or SLASH_CMD_RE.match(text) or INJECTED_CTX_RE.search(text):
+        return True
+    if GREETING_ONLY_RE.match(text.strip()):
+        return True
+    if NEW_LEAD_RE.search(text) or SAME_PROJECT_RE.search(text):
+        return True
+    if _is_intake_trigger(text) and STRONG_INTAKE_RE.search(text):
+        return True
+    return False
+
+
+def _extract_intake_fields_from_window(
+    window: list[tuple[str, str]],
+    phone: str | None = None,
+) -> dict[str, str]:
+    """
+    Map user replies to intake fields by pairing each assistant question with the next user message.
+    Avoids positional drift when step 1 (name) is skipped or greetings are counted as answers.
+    """
+    fields: dict[str, str] = {}
+    pending: str | None = None
+    for role, content in window:
+        if role == "assistant":
+            key = _detect_intake_step_key(content)
+            if key:
+                pending = key
+            continue
+        if role != "user" or not pending:
+            continue
+        text = content.strip()
+        if _is_noise_answer(text):
+            continue
+        if pending == "contact":
+            fields["contact"] = _resolve_contact_phone(text, phone)
+        else:
+            fields[pending] = text[:200]
+        pending = None
+    return fields
+
+
+def _intake_window(messages: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Messages for the current intake block, from the first intake question onward."""
+    start = _intake_block_start(messages)
+    block = messages[start:]
+    for i, (role, content) in enumerate(block):
+        if role == "assistant" and _is_name_step_question(content):
+            return block[i:]
+    for i, (role, content) in enumerate(block):
+        if role == "assistant" and _intake_started_marker(content):
+            return block[i:]
+    return block
 
 
 def _fresh_project_start_index(messages: list[tuple[str, str]]) -> int:
@@ -1021,10 +1088,7 @@ def _active_intake_window(
     sid = session_id or ""
     if _session_returning.get(sid) == "new":
         segment = messages[_fresh_project_start_index(messages) :]
-        for i, (role, content) in enumerate(segment):
-            if role == "assistant" and _intake_started_marker(content):
-                return segment[i + 1 :]
-        return segment
+        return _intake_window(segment)
     return _intake_window(messages)
 
 
@@ -1076,6 +1140,7 @@ def _mark_intake_active(phone: str | None, session_id: str | None = None) -> Non
 def _clear_intake_active(phone: str | None, session_id: str | None = None) -> None:
     for key in _phone_keys(phone):
         _phones_in_active_intake.discard(key)
+        _session_freshly_synced.discard(key)
 
 
 def _persistent_conversation(phone: str | None, limit: int = 60) -> list[tuple[str, str]]:
@@ -1221,32 +1286,53 @@ def _last_intake_step_asked(window: list[tuple[str, str]]) -> int:
     return 0
 
 
-def _next_intake_step_number(window: list[tuple[str, str]], answers: list[str]) -> int:
-    """Next question index from answers and the last intake line we sent."""
+def _next_intake_step_number(
+    window: list[tuple[str, str]],
+    answers: list[str],
+    phone: str | None = None,
+) -> int:
+    """Next question index from Q&A pairing and the last intake line we sent."""
+    fields = _extract_intake_fields_from_window(window, phone)
+    if not fields.get("name"):
+        return 1
+    if not fields.get("company"):
+        return 2
+    if not fields.get("industry"):
+        return 3
+    if not fields.get("goal"):
+        return 4
+    if not fields.get("budget"):
+        return 5
+    if not fields.get("timeline"):
+        return 6
+    if not fields.get("contact") and not _phone_step_asked(window):
+        return 7
+    if not fields.get("contact"):
+        return 7
     last_asked = _last_intake_step_asked(window)
     if last_asked and len(answers) >= last_asked:
         return min(last_asked + 1, 7)
-    n = min(len(answers) + 1, 7)
-    if len(answers) >= 1:
-        n = max(n, 2)
-    return n
+    return min(len(answers) + 1, 7)
 
 
-def _user_answers(window: list[tuple[str, str]]) -> list[str]:
+def _user_answers(
+    window: list[tuple[str, str]],
+    phone: str | None = None,
+) -> list[str]:
+    fields = _extract_intake_fields_from_window(window, phone)
+    ordered: list[str] = []
+    for key in ("name", "company", "industry", "goal", "budget", "timeline", "contact"):
+        val = fields.get(key, "").strip()
+        if val:
+            ordered.append(val)
+    if ordered:
+        return ordered
     answers: list[str] = []
     for role, content in window:
         if role != "user":
             continue
         text = content.strip()
-        if not text or SLASH_CMD_RE.match(text):
-            continue
-        if INJECTED_CTX_RE.search(text):
-            continue
-        if GREETING_ONLY_RE.match(text):
-            continue
-        if NEW_LEAD_RE.search(text) or SAME_PROJECT_RE.search(text):
-            continue
-        if _is_intake_trigger(text) and STRONG_INTAKE_RE.search(text):
+        if _is_noise_answer(text):
             continue
         answers.append(text)
     return answers
@@ -1687,6 +1773,8 @@ def _sync_crm_on_qualification(
     phone: str | None,
     contact: dict[str, str],
     answers: list[str],
+    *,
+    fields: dict[str, str] | None = None,
 ) -> dict[str, Any] | None:
     """
     Deterministic CRM write when intake completes — does not rely on the LLM calling crm_add_lead.
@@ -1701,9 +1789,15 @@ def _sync_crm_on_qualification(
     if not crm:
         return None
 
+    fld = fields or {}
     parsed = crm.parse_intake_answers(answers, company_hint=contact.get("company") or "")
-    name = (contact.get("name") or parsed.get("name") or "").strip()
-    company = (contact.get("company") or parsed.get("company") or "").strip()
+    name = (fld.get("name") or contact.get("name") or parsed.get("name") or "").strip()
+    company = (fld.get("company") or contact.get("company") or parsed.get("company") or "").strip()
+    goal = (fld.get("goal") or parsed.get("goal") or "").strip()
+    industry = (fld.get("industry") or parsed.get("what_they_sell") or "").strip()
+    budget = (fld.get("budget") or "").strip()
+    timeline = (fld.get("timeline") or "").strip()
+    budget_timeline = "; ".join(p for p in (budget, timeline) if p) or parsed.get("budget_timeline") or ""
     contact_phone = _normalize_phone_digits(contact.get("phone") or phone)
     if not name or name.lower() == "unknown":
         return None
@@ -1720,17 +1814,18 @@ def _sync_crm_on_qualification(
             source="WhatsApp",
             lead_status="Qualified",
             qualification_label=crm.infer_qualification_label(
-                parsed.get("budget_timeline") or "",
-                parsed.get("goal") or "",
+                budget_timeline,
+                goal,
             ),
-            what_they_sell=parsed.get("what_they_sell") or "",
-            goal=parsed.get("goal") or "",
-            budget_timeline=parsed.get("budget_timeline") or "",
+            what_they_sell=industry or company,
+            goal=goal,
+            budget_timeline=budget_timeline,
         )
         if sid:
             _session_crm_synced.add(sid)
         if phone:
-            _session_freshly_synced.add(phone)
+            for key in _phone_keys(phone):
+                _session_freshly_synced.discard(key)
         return result
     except Exception:
         return None
@@ -1778,22 +1873,40 @@ def _complete_with_contact(
     name: str | None = None,
 ) -> dict[str, Any]:
     prior = _prior_contact(phone, messages)
-    final_name = (name or prior.get("name") or "").strip() or "Unknown"
-    final_phone = _normalize_phone_digits(preferred_phone or phone)
-    company = _company_from_current_window(window) or _guess_company(messages, phone)
-    notes = _intake_notes_from_answers(answers, company=company, session_id=session_id)
+    fields = _extract_intake_fields_from_window(window, phone)
+    final_name = (
+        fields.get("name")
+        or name
+        or prior.get("name")
+        or (answers[0] if answers else "")
+        or ""
+    ).strip() or "Unknown"
+    final_phone = _normalize_phone_digits(
+        preferred_phone or fields.get("contact") or phone
+    )
+    company = (
+        fields.get("company")
+        or _company_from_current_window(window)
+        or _guess_company(messages, phone)
+        or ""
+    ).strip()
+    structured_answers = _answers_list_from_fields(
+        {**fields, "name": final_name, "contact": final_phone}
+    )
+    notes = _intake_notes_from_answers(structured_answers, company=company, session_id=session_id)
     contact = {"name": final_name, "phone": final_phone, "company": company, "notes": notes}
-    crm_result = _sync_crm_on_qualification(session_id, final_phone, contact, answers)
+    crm_result = _sync_crm_on_qualification(
+        session_id, final_phone, contact, structured_answers, fields=fields
+    )
     close_msg = _close_line_for_session(session_id, contact)
-    clean = [a.strip() for a in answers if (a or "").strip()]
     _notify_qualified_lead(
         session_id=session_id,
         name=final_name,
         company=company,
-        industry=clean[2] if len(clean) > 2 else "",
-        goal=clean[3] if len(clean) > 3 else "",
-        budget=clean[4] if len(clean) > 4 else "",
-        timeline=clean[5] if len(clean) > 5 else "",
+        industry=fields.get("industry", ""),
+        goal=fields.get("goal", ""),
+        budget=fields.get("budget", ""),
+        timeline=fields.get("timeline", ""),
         phone=final_phone,
         lead_type=_session_lead_type.get(session_id or "", ""),
         below_budget=(session_id or "") in _session_below_budget,
@@ -1859,13 +1972,14 @@ def _returning_new_contact_step(
 
 
 def _can_complete_intake(window: list[tuple[str, str]], answers: list[str]) -> bool:
-    if len(answers) < INTAKE_ANSWERS_REQUIRED:
-        return False
     if not _phone_step_asked(window):
+        return False
+    fields = _extract_intake_fields_from_window(window)
+    required = ("name", "company", "industry", "goal", "budget", "timeline")
+    if not all((fields.get(k) or "").strip() for k in required):
         return False
     intake_markers = (
         "your name",
-        "company called",
         "name of your business",
         "kind of business",
         "hoping to achieve",
@@ -1876,6 +1990,14 @@ def _can_complete_intake(window: list[tuple[str, str]], answers: list[str]) -> b
     if not any(m in assistant_text for m in intake_markers):
         return False
     return True
+
+
+def _answers_list_from_fields(fields: dict[str, str]) -> list[str]:
+    return [
+        fields.get(key, "").strip()
+        for key in ("name", "company", "industry", "goal", "budget", "timeline", "contact")
+        if fields.get(key, "").strip()
+    ]
 
 
 def _continue_fresh_intake_step(
@@ -1896,7 +2018,7 @@ def _continue_fresh_intake_step(
     if _step1_asked_fresh(session_id, session_messages) or _step1_asked_fresh(
         session_id, messages
     ):
-        answers = _user_answers(window)
+        answers = _user_answers(window, phone)
         ret = _returning_new_contact_step(
             session_id,
             messages,
@@ -1946,7 +2068,7 @@ def _continue_fresh_intake_step(
                         "in_intake": True,
                         "mode": "returning_intake",
                     }
-            n = _next_intake_step_number(window, answers)
+            n = _next_intake_step_number(window, answers, phone)
             return {"n": n, "message": STEPS[n], "in_intake": True, "mode": "intake"}
         resolved = _resolve_contact_phone(
             answers[-1] if answers else (user_message or ""),
@@ -2198,7 +2320,16 @@ def compute_intake_step(
                 "in_intake": True,
                 "mode": "complete",
             }
-        return {"n": 0, "message": "", "in_intake": False, "mode": "idle"}
+        if _user_re_engaged(user_message):
+            returning = compute_returning_step(
+                session_id, session_messages, user_message, phone
+            )
+            if returning:
+                _session_intake_closed.discard(sid)
+                return returning
+            _session_intake_closed.discard(sid)
+        else:
+            return {"n": 0, "message": "", "in_intake": False, "mode": "idle"}
 
     if user_message:
         last = messages[-1] if messages else None
@@ -2284,7 +2415,7 @@ def compute_intake_step(
                     return g
         return {"n": 0, "message": "", "in_intake": False, "mode": "idle"}
 
-    answers = _user_answers(window)
+    answers = _user_answers(window, phone)
     scope = _conversation_scope(session_id, session_messages)
     _track_lead_type_and_budget(session_id, user_message, scope, answers, phone=phone)
     ret_contact = _returning_new_contact_step(
@@ -2300,7 +2431,7 @@ def compute_intake_step(
         return ret_contact
 
     if not _can_complete_intake(window, answers):
-        n = _next_intake_step_number(window, answers)
+        n = _next_intake_step_number(window, answers, phone)
         step_out = {"n": n, "message": STEPS[n], "in_intake": True, "mode": "intake"}
         _track_intake_step_state(session_id, phone, step_out)
         return step_out
@@ -2632,23 +2763,23 @@ def transform_whatsapp_output(
             msgs = _normalize_messages(hist_for_step or history)
             scope = _conversation_scope(session_id, msgs)
             window = _active_intake_window(session_id, scope)
-            answers = _user_answers(window)
+            answers = _user_answers(window, phone)
+            fields = _extract_intake_fields_from_window(window, phone)
             if crm_contact and not step.get("crm_sync"):
                 sync = _sync_crm_on_qualification(
-                    session_id, phone, crm_contact, answers
+                    session_id, phone, crm_contact, answers, fields=fields
                 )
                 if sync and session_id:
                     _session_step[session_id] = {**step, "crm_sync": sync}
             if _can_complete_intake(window, answers):
-                clean = [a.strip() for a in answers if (a or "").strip()]
                 _notify_qualified_lead(
                     session_id=session_id,
-                    name=crm_contact.get("name") or (clean[0] if clean else ""),
-                    company=crm_contact.get("company") or (clean[1] if len(clean) > 1 else ""),
-                    industry=clean[2] if len(clean) > 2 else "",
-                    goal=clean[3] if len(clean) > 3 else "",
-                    budget=clean[4] if len(clean) > 4 else "",
-                    timeline=clean[5] if len(clean) > 5 else "",
+                    name=crm_contact.get("name") or fields.get("name", ""),
+                    company=crm_contact.get("company") or fields.get("company", ""),
+                    industry=fields.get("industry", ""),
+                    goal=fields.get("goal", ""),
+                    budget=fields.get("budget", ""),
+                    timeline=fields.get("timeline", ""),
                     phone=crm_contact.get("phone") or phone,
                     lead_type=_session_lead_type.get(session_id or "", ""),
                     below_budget=(session_id or "") in _session_below_budget,

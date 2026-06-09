@@ -7,11 +7,15 @@ from intake_guard import (
     GREETING,
     RETURNING_QUESTION,
     STEPS,
+    _extract_intake_fields_from_window,
     _guard_applies,
+    _next_intake_step_number,
     _phones_in_active_intake,
+    _session_intake_closed,
     _session_returning,
     _session_step,
     _session_transcript,
+    _user_answers,
     compute_intake_step,
     compute_returning_step,
     guard_response,
@@ -343,5 +347,73 @@ with patch("intake_guard._had_prior_intake", return_value=True), patch(
     )
 assert gbrain_step["mode"] == "intake", gbrain_step
 assert gbrain_step["n"] == 7, gbrain_step
+
+# Field extraction: skipped name step + helloo must not become name
+
+lalith_window = [
+    ("assistant", STEPS[2]),
+    ("user", "Gifiifi"),
+    ("assistant", STEPS[3]),
+    ("user", "Mainly we do graffti"),
+    ("assistant", STEPS[4]),
+    ("user", "More customers"),
+    ("assistant", STEPS[5]),
+    ("user", "200000"),
+    ("assistant", STEPS[6]),
+    ("user", "August"),
+    ("assistant", STEPS[7]),
+    ("user", "This is okay"),
+]
+fields = _extract_intake_fields_from_window(lalith_window, "94766767565")
+assert fields.get("name", "") == "", fields
+assert fields.get("company") == "Gifiifi", fields
+assert fields.get("industry") == "Mainly we do graffti", fields
+assert fields.get("goal") == "More customers", fields
+assert fields.get("budget") == "200000", fields
+assert fields.get("timeline") == "August", fields
+assert _next_intake_step_number(lalith_window, [], "94766767565") == 1
+
+hello_window = [
+    ("user", "Helloo"),
+    ("assistant", STEPS[2]),
+    ("user", "Gifiifi"),
+]
+assert _extract_intake_fields_from_window(hello_window).get("name", "") == ""
+assert "Helloo" not in _user_answers(hello_window)
+
+# After intake completes, returning customer should be detected (not fresh greeting)
+from intake_guard import _clear_intake_active, _session_freshly_synced
+
+_phones_in_active_intake.clear()
+_session_freshly_synced.add("94766767565")
+_clear_intake_active("94766767565")
+assert "94766767565" not in _session_freshly_synced
+with patch("intake_guard._crm_lead_exists", return_value=True), patch(
+    "intake_guard._persistent_conversation", return_value=[]
+), patch("intake_guard._had_prior_intake", return_value=True):
+    ret2 = compute_intake_step(
+        [{"role": "assistant", "content": CLOSE_LINE}],
+        "Hellow",
+        session_id="s-return2",
+        phone="94766767565",
+    )
+assert ret2["mode"] in ("returning_ask", "returning_welcome"), ret2
+
+# After intake closes in the same session, a greeting must route to returning — not idle/LLM fresh start
+_session_intake_closed.add("s-post-close")
+close_hist = [
+    {"role": "assistant", "content": CLOSE_LINE},
+]
+with patch("intake_guard._had_prior_intake", return_value=True), patch(
+    "intake_guard._known_contact", return_value={"name": "Viraj", "phone": "94766767565"}
+):
+    post_close = compute_intake_step(
+        close_hist,
+        "Hellow",
+        session_id="s-post-close",
+        phone="94766767565",
+    )
+assert post_close["mode"] in ("returning_ask", "returning_welcome", "returning_followup"), post_close
+_session_intake_closed.discard("s-post-close")
 
 print("ok")
