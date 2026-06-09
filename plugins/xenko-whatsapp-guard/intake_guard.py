@@ -99,6 +99,24 @@ STEPS = {
     7: "is this the best number to reach you on, or do you have another one?",
 }
 
+SERVICE_QUESTION = (
+    "are you mainly looking for a website, help with marketing, or not sure yet?"
+)
+
+NON_ANSWER_RE = re.compile(
+    r"\b(?:like i said|as i said|i said before|already (?:said|told)|"
+    r"told you (?:before|already)|same question|stop asking|"
+    r"run(?:ning)? like a (?:script|mummy)|not a script|think from your brain|"
+    r"use your (?:skills|brain)|you(?:'re| are) (?:a )?(?:bot|robot|script)|"
+    r"just run(?:ning)?|not listening|didn'?t (?:read|listen))\b",
+    re.I,
+)
+
+REPEAT_COMPLAINT_RE = re.compile(
+    r"\b(?:like i said|as i said|i said before|already (?:said|told)|told you)\b",
+    re.I,
+)
+
 # Single message greeting - NO multi-part, NO marketing pitch in greeting
 GREETING = "hi there. thanks for reaching out. i'd be happy to help. what's your name?"
 
@@ -517,6 +535,281 @@ def _detect_lead_type(user_message: str, messages: list[tuple[str, str]] | None 
     if re.search(r"\bnot sure what i need|don't know what i need\b", combined, re.I):
         return "unsure"
     return "general"
+
+
+def _parse_company_answer(text: str) -> tuple[str, str]:
+    """Split combined company + industry replies (e.g. 'Dots and we sell dog food')."""
+    t = (text or "").strip()
+    if not t:
+        return "", ""
+    m = re.match(
+        r"^(.+?)\s+and\s+(?:we\s+)?(?:sell|do|make|offer|provide)\s+(.+)$",
+        t,
+        re.I,
+    )
+    if m:
+        return m.group(1).strip(), m.group(2).strip()
+    m = re.search(
+        r"(?:company is called|company is|business is called|called|named)\s+(?:as\s+)?(.+)$",
+        t,
+        re.I,
+    )
+    if m and re.search(r"\b(we sell|we make|we do|we offer)\b", t, re.I):
+        company = m.group(1).strip().rstrip(".,!?")
+        industry = re.sub(
+            r"(?:company is called|company is|business is called|called|named)\s+(?:as\s+)?.+$",
+            "",
+            t,
+            flags=re.I,
+        ).strip().rstrip(".,!?")
+        return company, industry
+    return t, ""
+
+
+def _infer_service_from_text(text: str) -> str:
+    t = (text or "").lower()
+    if WEB_INTAKE_RE.search(t) or re.search(r"\bwebsite\b", t, re.I):
+        return "web"
+    if re.search(
+        r"\b(marketing|social media|content marketing|more customers|more leads|"
+        r"brand awareness|ads?|advertis)\b",
+        t,
+        re.I,
+    ):
+        return "marketing"
+    if re.search(r"\b(not sure|don'?t know|unsure|no idea)\b", t, re.I):
+        return "unsure"
+    return ""
+
+
+def _service_known(fields: dict[str, str], session_id: str | None = None) -> bool:
+    if (fields.get("service") or "").strip():
+        return True
+    sid = session_id or ""
+    lead = _session_lead_type.get(sid, "")
+    return lead in ("web", "marketing", "unsure")
+
+
+def _resolved_service(fields: dict[str, str], session_id: str | None = None) -> str:
+    svc = (fields.get("service") or "").strip().lower()
+    if svc:
+        return svc
+    sid = session_id or ""
+    lead = _session_lead_type.get(sid, "")
+    if lead in ("web", "marketing", "unsure"):
+        return lead
+    return ""
+
+
+def _step4_needs_service(fields: dict[str, str], session_id: str | None = None) -> bool:
+    return not _service_known(fields, session_id)
+
+
+def _effective_field_for_step(
+    step_n: int,
+    fields: dict[str, str],
+    session_id: str | None = None,
+) -> str:
+    if step_n == 4 and _step4_needs_service(fields, session_id):
+        return "service"
+    return STEP_FIELD_MAP.get(step_n, "")
+
+
+def _field_for_answer(
+    step_n: int,
+    fields: dict[str, str],
+    session_id: str | None = None,
+    question_text: str = "",
+) -> str:
+    key = _detect_intake_step_key(question_text)
+    if key:
+        return key
+    return _effective_field_for_step(step_n, fields, session_id)
+
+
+def _is_non_answer(text: str, step_n: int = 0) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return True
+    return bool(NON_ANSWER_RE.search(t))
+
+
+def _goal_question_for_service(service: str) -> str:
+    if service == "web":
+        return "what are you hoping the website will help you achieve?"
+    if service == "marketing":
+        return "what are you hoping to achieve through marketing?"
+    if service == "unsure":
+        return "what would you like to improve most right now?"
+    return STEPS[4]
+
+
+def _budget_question_for_service(service: str) -> str:
+    if service == "web":
+        return "do you already have a budget in mind for the project?"
+    if service == "marketing":
+        return "do you have a monthly marketing budget in mind?"
+    return "do you have a rough budget in mind?"
+
+
+def _timeline_question_for_service(service: str) -> str:
+    if service == "web":
+        return "when would you ideally like the website completed?"
+    return "when would you ideally like to get started?"
+
+
+def _intake_acknowledgment(
+    step_n: int,
+    fields: dict[str, str],
+    *,
+    reask: bool = False,
+    user_message: str = "",
+) -> str:
+    name = _first_name(fields.get("name", ""))
+    if reask or REPEAT_COMPLAINT_RE.search(user_message or ""):
+        if step_n == 3 and (fields.get("industry") or "").strip():
+            return f"you're right, you mentioned {fields['industry'][:50]}. "
+        if step_n == 4 and not _step4_needs_service(fields):
+            return "got it. "
+        return "sorry about that - "
+    if step_n == 2 and name:
+        return f"nice to meet you, {name}. "
+    if step_n == 3:
+        return "got it. "
+    if step_n == 4:
+        return "sounds good. " if _service_known(fields) else ""
+    if step_n == 5:
+        return "that helps. "
+    if step_n == 6:
+        return "got it. "
+    if step_n == 7:
+        return "perfect. "
+    return ""
+
+
+def _intake_message_for_step(
+    step_n: int,
+    fields: dict[str, str],
+    session_id: str | None = None,
+    *,
+    reask: bool = False,
+    user_message: str = "",
+) -> str:
+    ack = _intake_acknowledgment(
+        step_n, fields, reask=reask, user_message=user_message
+    )
+    service = _resolved_service(fields, session_id)
+    if step_n == 4 and _step4_needs_service(fields, session_id):
+        return f"{ack}{SERVICE_QUESTION}".strip()
+    if step_n == 4:
+        return f"{ack}{_goal_question_for_service(service)}".strip()
+    if step_n == 5:
+        return f"{ack}{_budget_question_for_service(service)}".strip()
+    if step_n == 6:
+        return f"{ack}{_timeline_question_for_service(service)}".strip()
+    if step_n == 1:
+        return STEPS[1]
+    if step_n == 2 and ack:
+        return f"{ack}{STEPS[2]}"
+    if step_n == 3 and ack:
+        return f"{ack}{STEPS[3]}"
+    return STEPS.get(step_n, STEPS[4])
+
+
+def _intake_step_payload(
+    step_n: int,
+    fields: dict[str, str],
+    session_id: str | None = None,
+    *,
+    reask: bool = False,
+    user_message: str = "",
+    **extras: Any,
+) -> dict[str, Any]:
+    return {
+        "n": step_n,
+        "message": _intake_message_for_step(
+            step_n,
+            fields,
+            session_id,
+            reask=reask,
+            user_message=user_message,
+        ),
+        "in_intake": True,
+        "mode": "intake",
+        "_fields": dict(fields),
+        **extras,
+    }
+
+
+def _build_next_intake_step(
+    window: list[tuple[str, str]],
+    answers: list[str],
+    phone: str | None,
+    session_id: str | None,
+    user_message: str = "",
+) -> dict[str, Any]:
+    fields = _merged_intake_fields(window, phone, session_id)
+    n = _next_intake_step_number(window, answers, phone, session_id)
+    reask = bool(
+        user_message
+        and (
+            _is_non_answer(user_message, n)
+            or REPEAT_COMPLAINT_RE.search(user_message)
+        )
+    )
+    return _intake_step_payload(
+        n,
+        fields,
+        session_id,
+        reask=reask,
+        user_message=user_message,
+    )
+
+
+def _llm_intake_reply_ok(
+    text: str,
+    step_n: int,
+    fields: dict[str, str],
+    session_id: str | None = None,
+) -> bool:
+    t = sanitize_whatsapp_text(text or "")
+    if not t or len(t) < 8:
+        return False
+    if BANNED_REPLY_RE.search(t) or PREMATURE_CLOSE_RE.search(t):
+        return False
+    if t.count("?") > 1:
+        return False
+    low = t.lower()
+    if step_n == 4 and _step4_needs_service(fields, session_id):
+        markers = ("website", "marketing", "not sure")
+        return any(m in low for m in markers) and "?" in t
+    if step_n == 4:
+        return any(
+            m in low
+            for m in (
+                "hoping",
+                "achieve",
+                "improve",
+                "help you",
+                "website",
+                "marketing",
+            )
+        ) and "?" in t
+    if step_n == 5:
+        return "budget" in low and "?" in t
+    if step_n == 6:
+        return ("when" in low or "timeline" in low or "started" in low or "completed" in low) and "?" in t
+    if step_n == 7:
+        return "number" in low and "?" in t
+    if step_n == 2:
+        return ("business" in low or "company" in low) and "?" in t
+    if step_n == 3:
+        return ("business" in low or "industry" in low) and "?" in t
+    if step_n == 1:
+        return "name" in low and "?" in t
+    expected = _intake_message_for_step(step_n, fields, session_id).lower()
+    core = STEPS.get(step_n, "").lower()
+    return core in low or expected[:20] in low
 
 
 def _below_budget_close_line(name: str = "") -> str:
@@ -1078,13 +1371,20 @@ def _assistant_step_number(content: str) -> int:
     if _is_welcome_greeting_message(content):
         return 1
     low = (content or "").strip().lower()
+    if _is_name_step_question(content):
+        return 1
     for n in range(7, 0, -1):
         step = STEPS[n].lower()
         if step in low or low == step:
             return n
+        dyn = _intake_message_for_step(n, {}, None).lower()
+        if len(dyn) > 12 and dyn in low:
+            return n
     key = _detect_intake_step_key(content)
     if not key:
         return 0
+    if key == "service":
+        return 4
     for n, field in STEP_FIELD_MAP.items():
         if field == key:
             return n
@@ -1104,11 +1404,15 @@ def _accept_answer_for_step(
     text: str,
     fields: dict[str, str],
     phone: str | None,
+    session_id: str | None = None,
+    question_text: str = "",
 ) -> bool:
     t = (text or "").strip()
     if not t or _is_noise_answer(t):
         return False
-    key = STEP_FIELD_MAP.get(step_n, "")
+    if _is_non_answer(t, step_n):
+        return False
+    key = _field_for_answer(step_n, fields, session_id, question_text)
     if not key:
         return False
     if step_n == 1 and not _is_valid_name_answer(t):
@@ -1121,6 +1425,8 @@ def _accept_answer_for_step(
             or _user_confirms_current_phone(t)
             or t
         )
+    if key == "service" and not _infer_service_from_text(t) and len(t) < 3:
+        return False
     return True
 
 
@@ -1129,12 +1435,36 @@ def _apply_step_answer(
     text: str,
     fields: dict[str, str],
     phone: str | None,
+    session_id: str | None = None,
+    question_text: str = "",
 ) -> None:
-    if not _accept_answer_for_step(step_n, text, fields, phone):
+    if not _accept_answer_for_step(
+        step_n, text, fields, phone, session_id, question_text
+    ):
         return
-    key = STEP_FIELD_MAP[step_n]
+    key = _field_for_answer(step_n, fields, session_id, question_text)
     if step_n == 7:
         fields[key] = _resolve_contact_phone(text, phone)
+    elif key == "service":
+        inferred = _infer_service_from_text(text) or text[:200].lower()
+        fields["service"] = inferred
+        if session_id:
+            _session_lead_type[session_id] = inferred
+        if len(text.split()) > 2 and not (fields.get("goal") or "").strip():
+            fields["goal"] = text[:200]
+    elif step_n == 2:
+        company, industry = _parse_company_answer(text)
+        fields["company"] = (company or text)[:200]
+        if industry and not (fields.get("industry") or "").strip():
+            fields["industry"] = industry[:200]
+    elif key == "goal":
+        fields["goal"] = text[:200]
+        if not (fields.get("service") or "").strip():
+            inferred = _infer_service_from_text(text)
+            if inferred:
+                fields["service"] = inferred
+                if session_id:
+                    _session_lead_type[session_id] = inferred
     else:
         fields[key] = text[:200]
 
@@ -1192,11 +1522,26 @@ def _capture_reply_for_last_question(
     for key, val in store.items():
         if (val or "").strip():
             merged_prior[key] = val
-    answering_step = _last_unanswered_intake_step(scope, merged_prior)
+    answering_step = _last_unanswered_intake_step(scope, merged_prior, session_id)
     if not answering_step:
         return _session_field_store(session_id, phone)
+    last_question = ""
+    for role, content in reversed(scope):
+        if role != "assistant":
+            continue
+        step_n = _assistant_step_number(content)
+        if step_n == answering_step:
+            last_question = content
+            break
     fields = _session_field_store(session_id, phone)
-    _apply_step_answer(answering_step, user_message, fields, phone)
+    _apply_step_answer(
+        answering_step,
+        user_message,
+        fields,
+        phone,
+        session_id,
+        question_text=last_question,
+    )
     return _persist_session_fields(session_id, phone, fields)
 
 
@@ -1246,10 +1591,22 @@ def _detect_intake_step_key(content: str) -> str | None:
     if "kind of business" in low or "what industry" in low:
         return "industry"
     if (
+        "looking for a website" in low
+        or "help with marketing" in low
+        or "not sure yet" in low
+        or ("website" in low and "marketing" in low and "?" in low)
+    ):
+        return "service"
+    if (
         "hoping to achieve" in low
         or "help you achieve" in low
-        or "help with" in low
+        or "improve most" in low
+        or "through marketing" in low
         or "hoping we can help" in low
+        or "generate leads" in low
+        or "build trust" in low
+        or "sell products online" in low
+        or "brand awareness" in low
     ):
         return "goal"
     if "budget" in low:
@@ -1285,24 +1642,32 @@ def _extract_intake_fields_from_window(
     """
     fields: dict[str, str] = {}
     pending_step = 0
+    pending_question = ""
     for role, content in window:
         if role == "assistant":
             step_n = _assistant_step_number(content)
             if step_n:
                 pending_step = step_n
+                pending_question = content
             continue
         if role != "user" or not pending_step:
             continue
         text = content.strip()
-        if not _accept_answer_for_step(pending_step, text, fields, phone):
+        if not _accept_answer_for_step(
+            pending_step, text, fields, phone, question_text=pending_question
+        ):
             continue
         highest = _highest_filled_step(fields)
-        key = STEP_FIELD_MAP[pending_step]
+        key = _field_for_answer(pending_step, fields, question_text=pending_question)
         if pending_step < highest and (fields.get(key) or "").strip():
             pending_step = 0
+            pending_question = ""
             continue
-        _apply_step_answer(pending_step, text, fields, phone)
+        _apply_step_answer(
+            pending_step, text, fields, phone, question_text=pending_question
+        )
         pending_step = 0
+        pending_question = ""
     return fields
 
 
@@ -1577,15 +1942,19 @@ def _last_intake_step_asked(window: list[tuple[str, str]]) -> int:
 def _last_unanswered_intake_step(
     messages: list[tuple[str, str]],
     fields: dict[str, str],
+    session_id: str | None = None,
 ) -> int:
     """Last intake question that does not yet have a captured answer (skips duplicate orphans)."""
+    highest = _highest_filled_step(fields)
     for role, content in reversed(messages):
         if role != "assistant":
             continue
         step_n = _assistant_step_number(content)
         if not step_n:
             continue
-        key = STEP_FIELD_MAP.get(step_n, "")
+        if highest and step_n < highest:
+            continue
+        key = _field_for_answer(step_n, fields, session_id, content)
         if key and (fields.get(key) or "").strip():
             continue
         return step_n
@@ -1606,6 +1975,8 @@ def _next_intake_step_number(
         return 2
     if not fields.get("industry"):
         return 3
+    if _step4_needs_service(fields, session_id):
+        return 4
     if not fields.get("goal"):
         return 4
     if not fields.get("budget"):
@@ -2269,7 +2640,8 @@ def _returning_new_contact_step(
         return None
 
     if not _phone_step_asked(messages, session_id):
-        return {"n": 7, "message": STEPS[7], "in_intake": True, "mode": "intake"}
+        fields = _merged_intake_fields(window, phone, session_id)
+        return _intake_step_payload(7, fields, session_id)
 
     alt_phone = _extract_phone_from_text(user_message or "")
     if alt_phone or _user_confirms_current_phone(user_message) or (user_message or "").strip():
@@ -2303,6 +2675,8 @@ def _can_complete_intake(
         "your name",
         "name of your business",
         "kind of business",
+        "looking for a website",
+        "help with marketing",
         "hoping to achieve",
         "budget",
         "when would you",
@@ -2360,7 +2734,8 @@ def _continue_fresh_intake_step(
             and len(answers) >= steps_required
             and not _phone_step_asked(messages, session_id)
         ):
-            return {"n": 7, "message": STEPS[7], "in_intake": True, "mode": "intake"}
+            fields = _merged_intake_fields(window, phone, session_id)
+            return _intake_step_payload(7, fields, session_id)
         if not _can_complete_intake(window, answers, phone, session_id):
             if _is_returning_new_project(session_id, phone, messages):
                 if not _returning_intake_started(session_messages) and not _returning_intake_started(
@@ -2384,15 +2759,17 @@ def _continue_fresh_intake_step(
                         len(answers) >= RETURNING_KNOWN_PROFILE_STEPS
                         and not _phone_step_asked(messages, session_id)
                     ):
-                        return {"n": 7, "message": STEPS[7], "in_intake": True, "mode": "intake"}
+                        fields = _merged_intake_fields(window, phone, session_id)
+                        return _intake_step_payload(7, fields, session_id)
                     return {
                         "n": n,
                         "message": _returning_intake_message(n, prior),
                         "in_intake": True,
                         "mode": "returning_intake",
                     }
-            n = _next_intake_step_number(window, answers, phone, session_id)
-            return {"n": n, "message": STEPS[n], "in_intake": True, "mode": "intake"}
+            return _build_next_intake_step(
+                window, answers, phone, session_id, user_message
+            )
         resolved = _resolve_contact_phone(
             answers[-1] if answers else (user_message or ""),
             phone,
@@ -2410,8 +2787,9 @@ def _continue_fresh_intake_step(
     if int(stored.get("n") or 0) == 1 and stored.get("mode") == "intake":
         window = _active_intake_window(session_id, session_messages)
         answers = _user_answers(window, phone, session_id)
-        n = _next_intake_step_number(window, answers, phone, session_id)
-        return {"n": n, "message": STEPS[n], "in_intake": True, "mode": "intake"}
+        return _build_next_intake_step(
+            window, answers, phone, session_id, user_message
+        )
     return None
 
 
@@ -2772,8 +3150,9 @@ def compute_intake_step(
         return ret_contact
 
     if not _can_complete_intake(window, answers, phone, session_id):
-        n = _next_intake_step_number(window, answers, phone, session_id)
-        step_out = {"n": n, "message": STEPS[n], "in_intake": True, "mode": "intake"}
+        step_out = _build_next_intake_step(
+            window, answers, phone, session_id, user_message
+        )
         _track_intake_step_state(session_id, phone, step_out)
         return step_out
 
@@ -2808,6 +3187,12 @@ def _track_lead_type_and_budget(
         return
     if sid not in _session_lead_type:
         _session_lead_type[sid] = _detect_lead_type(user_message, scope)
+    lead = _session_lead_type.get(sid, "")
+    if lead in ("web", "marketing", "unsure"):
+        fields = _session_field_store(sid, phone)
+        if not (fields.get("service") or "").strip():
+            fields["service"] = lead
+            _persist_session_fields(sid, phone, fields)
     if len(answers) >= 5:
         _flag_below_budget_web(
             sid,
@@ -2854,8 +3239,13 @@ def sanitize_whatsapp_text(text: str) -> str:
     return t
 
 
-def guard_response(text: str, step: dict[str, Any]) -> str:
+def guard_response(
+    text: str,
+    step: dict[str, Any],
+    session_id: str | None = None,
+) -> str:
     mode = step.get("mode", "intake")
+    fields = step.get("_fields") or {}
     if mode == "boundary":
         out = step.get("message") or BOUNDARY_REPLY
     elif mode == "greeting_burst":
@@ -2873,21 +3263,25 @@ def guard_response(text: str, step: dict[str, Any]) -> str:
     elif mode == "returning_same":
         out = CLOSE_LINE_LEGACY
     elif mode == "email_confirm":
-        out = step.get("message") or STEPS[7]
+        out = step.get("message") or _intake_message_for_step(7, fields, session_id)
     elif mode == "email_ask":
-        out = step.get("message") or STEPS[7]
+        out = step.get("message") or _intake_message_for_step(7, fields, session_id)
     elif mode == "complete" or int(step.get("n") or 0) >= CLOSE_STEP:
         out = step.get("message") or CLOSE_LINE
     elif not step.get("in_intake"):
         out = sanitize_whatsapp_text(text)
     else:
         n = int(step.get("n", 0))
+        fallback = step.get("message") or _intake_message_for_step(n, fields, session_id)
         if n >= CLOSE_STEP:
             out = step.get("message") or CLOSE_LINE
         elif 1 <= n <= 7:
-            out = step.get("message") or STEPS[n]
+            if text and _llm_intake_reply_ok(text, n, fields, session_id):
+                out = sanitize_whatsapp_text(text)
+            else:
+                out = fallback
         else:
-            out = sanitize_whatsapp_text(text)
+            out = sanitize_whatsapp_text(text) or fallback
     out = sanitize_whatsapp_text(out)
     if not out and int(step.get("n") or 0) >= CLOSE_STEP:
         out = step.get("message") or CLOSE_LINE
@@ -2911,6 +3305,13 @@ def pre_llm_intake_context(
         session_id=session_id,
     )
     _track_intake_step_state(session_id, phone, step)
+    if not step.get("_fields"):
+        msgs = _normalize_messages(conversation_history)
+        window = _active_intake_window(session_id, msgs)
+        step = {
+            **step,
+            "_fields": _merged_intake_fields(window, phone, session_id),
+        }
     if session_id:
         _session_step[session_id] = {
             **step,
@@ -2993,11 +3394,16 @@ def pre_llm_intake_context(
                 f"Do NOT call send_message. Visible reply ONLY: {close_msg}"
             )
     else:
+        fields = step.get("_fields") or {}
+        topic = step.get("message") or _intake_message_for_step(n, fields, session_id)
         hint = (
-            f"Step {n} of 7. One question per message. Acknowledge their last answer naturally. "
-            f"Collect: name, company, industry, outcome, budget, timeline, contact number. "
+            f"Step {n} of 7. One question per message only. "
+            f"Acknowledge what they just said in a natural, human way before your question "
+            f"(e.g. 'got it', 'nice to meet you', 'that helps'). "
+            f"Listen to their message — do not repeat a question they already answered. "
+            f"If they gave company and industry together, do not ask industry again. "
             f"NEVER use terminal, session_search, read_file, skill_view, or execute_code. "
-            f"Ask about: {step['message']}"
+            f"Your question must cover: {topic}"
         )
     return {"context": f"\n\n[WHATSAPP INTAKE - mandatory]\n{hint}\n"}
 
@@ -3136,7 +3542,7 @@ def transform_whatsapp_output(
                     below_budget=(session_id or "") in _session_below_budget,
                     destination="founder",
                 )
-        out = guard_response(response_text or "", step)
+        out = guard_response(response_text or "", step, session_id)
         out = sanitize_whatsapp_text(out) or CLOSE_LINE
         _record_assistant_in_transcript(session_id, out)
         if step.get("mode") == "greeting_burst" and session_id:
@@ -3148,7 +3554,9 @@ def transform_whatsapp_output(
             hist_for_step, user_msg, phone=phone, session_id=session_id
         )
         if recovery.get("in_intake") or recovery.get("mode") == "complete":
-            out = sanitize_whatsapp_text(guard_response(response_text or "", recovery))
+            out = sanitize_whatsapp_text(
+                guard_response(response_text or "", recovery, session_id)
+            )
             out = out or CLOSE_LINE
             _record_assistant_in_transcript(session_id, out)
             if recovery.get("mode") == "greeting_burst" and session_id:
@@ -3165,14 +3573,16 @@ def transform_whatsapp_output(
             hist_for_step, user_msg, phone=phone, session_id=session_id
         )
         if retry.get("in_intake") or retry.get("mode") == "complete":
-            return sanitize_whatsapp_text(guard_response("", retry)) or CLOSE_LINE
+            return (
+                sanitize_whatsapp_text(guard_response("", retry, session_id)) or CLOSE_LINE
+            )
     if CLOSE_LINE in cleaned.lower():
         msgs = _messages_from_history(history)
         if user_msg:
             msgs.append(("user", user_msg))
         returning = _safe_returning_step(session_id, msgs, user_msg, phone)
         if returning and returning.get("mode") in ("returning_ask", "returning_same"):
-            return guard_response(response_text or "", returning)
+            return guard_response(response_text or "", returning, session_id)
 
     if cleaned != (response_text or ""):
         return cleaned

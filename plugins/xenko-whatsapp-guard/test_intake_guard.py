@@ -574,4 +574,65 @@ assert final_fields.get("name") == "Gunaraj" or crm.get("name") == "Gunaraj", (f
 assert final_fields.get("company") == "Acme Shop" or "Acme Shop" in (crm.get("notes") or ""), (final_fields, crm)
 assert final_fields.get("goal") == "I need more customer" or "I need more customer" in (crm.get("notes") or ""), (final_fields, crm)
 
+# Viraj scenario: compound company+industry, service discovery, non-answer rejection
+from intake_guard import (
+    SERVICE_QUESTION,
+    _parse_company_answer,
+    _is_non_answer,
+)
+
+assert _parse_company_answer("Dots and we sell dog food") == ("Dots", "dog food")
+
+_session_transcript.clear()
+_session_step.clear()
+_session_fields.clear()
+_phone_intake_fields.clear()
+_viraj_sid = "s-viraj-dots"
+_viraj_phone = "94741597999"
+_viraj_turns = [
+    ("user", "Hellow"),
+    ("assistant", GREETING),
+    ("user", "I am Viraj Gunasinghe"),
+    ("assistant", STEPS[2]),
+    ("user", "Dots and we sell dog food"),
+]
+_session_transcript[_viraj_sid] = list(_viraj_turns)
+dots_step = compute_intake_step(
+    [{"role": "user", "content": "Dots and we sell dog food"}],
+    "Dots and we sell dog food",
+    session_id=_viraj_sid,
+    phone=_viraj_phone,
+)
+assert dots_step["n"] == 4, dots_step
+assert "website" in (dots_step.get("message") or "").lower(), dots_step
+assert _session_fields[_viraj_sid].get("company") == "Dots"
+assert _session_fields[_viraj_sid].get("industry") == "dog food"
+assert "kind of business" not in (dots_step.get("message") or "").lower()
+
+# Script complaint must not advance to budget
+_script_hist = _viraj_turns + [
+    ("assistant", dots_step["message"]),
+    ("user", "Use your skills and think from your brain not just run like a script"),
+]
+_session_transcript[_viraj_sid] = list(_script_hist)
+assert _is_non_answer("Use your skills and think from your brain not just run like a script")
+script_step = compute_intake_step(
+    [{"role": "user", "content": _script_hist[-1][1]}],
+    _script_hist[-1][1],
+    session_id=_viraj_sid,
+    phone=_viraj_phone,
+)
+assert script_step["n"] == 4, script_step
+assert "budget" not in (script_step.get("message") or "").lower(), script_step
+assert not (_session_fields.get(_viraj_sid, {}).get("goal") or "").strip()
+
+# LLM natural reply is kept when it matches the step topic
+_natural = "nice to meet you viraj. are you mainly looking for a website, help with marketing, or not sure yet?"
+_out = guard_response(
+    _natural,
+    {"n": 4, "mode": "intake", "in_intake": True, "_fields": _session_fields[_viraj_sid]},
+    _viraj_sid,
+)
+assert "website" in _out.lower() and "marketing" in _out.lower()
+
 print("ok")

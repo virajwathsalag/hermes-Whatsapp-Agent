@@ -1,6 +1,6 @@
 name: xenko-whatsapp-guard
 version: 1.0.0
-description: Sanitize WhatsApp replies and enforce 5-step intake before founder close
+description: Guide WhatsApp intake with human replies, service discovery, and founder close
 author: Xenko Team
 
 hooks:
